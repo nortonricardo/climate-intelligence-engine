@@ -75,8 +75,6 @@ Depois abra `main.ipynb` no navegador.
 
 ---
 
----
-
 ## Pipeline de Dados
 
 Com o ambiente ativado (`conda activate climate-engine`), execute os scripts na ordem abaixo.
@@ -85,7 +83,7 @@ Com o ambiente ativado (`conda activate climate-engine`), execute os scripts na 
 
 ### 1.1 — Download dos dados
 
-Baixa os arquivos `station.parquet` e `weather_measurements.parquet` do Google Drive para a pasta `data/`.
+Baixa os arquivos `stations.parquet` e `weather_measurements.parquet` do Google Drive para a pasta `data/`.
 
 ```bash
 python 1.1_download_data.py

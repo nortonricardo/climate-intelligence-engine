@@ -49,3 +49,4 @@ dependencies:
     - mlflow             # tracking de experimentos
     - hydra-core         # gestão de configs
     - gdown              # download de arquivos do Google Drive
+    - weasyprint         # exportação de notebooks para PDF

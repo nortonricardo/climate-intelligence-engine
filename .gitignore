@@ -2,6 +2,9 @@
 data/*
 !data/.gitkeep
 
+# Exportações geradas pelo 1.3
+*.html
+
 # Python
 __pycache__/
 *.py[cod]
