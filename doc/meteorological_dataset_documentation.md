@@ -6,7 +6,7 @@ Este projeto utiliza um conjunto de dados meteorológicos históricos do Brasil 
 
 Os dados cobrem o período entre:
 
-- **Ano inicial:** 2000
+- **Ano inicial:** 2000 (primeiro registro: 2000-05-07)
 - **Ano final:** 2025 (último registro disponível)
 
 Todos os horários registrados estão em:
@@ -44,19 +44,19 @@ Este dataset contém as observações meteorológicas registradas por estação.
 
 ## Colunas do Dataset
 
-| Coluna | Descrição | Exemplo |
-|---|---|---|
-| `station_code` | Código identificador da estação meteorológica | `A001` |
-| `measurement_time` | Data e hora da medição em UTC | `2025-12-25 01:00:00` |
-| `temperature` | Temperatura do ar | `22.2` |
-| `humidity` | Umidade relativa do ar (%) | `68` |
-| `rainfall` | Volume de chuva acumulada na hora | `0` |
-| `global_radiation` | Radiação solar global incidente | `2163.31` |
-| `pressure` | Pressão atmosférica | `886.1` |
-| `dew_point` | Temperatura do ponto de orvalho | `16.0` |
-| `wind_speed` | Velocidade média do vento | `1.3` |
-| `wind_gust` | Rajada máxima de vento | `2.7` |
-| `wind_direction` | Direção do vento em graus | `101` |
+| Coluna | Tipo | Descrição | Exemplo |
+|---|---|---|---|
+| `station_code` | `object` (str) | Código alfanumérico da estação | `A001` |
+| `measurement_time` | `datetime64[us]` | Data e hora da medição em UTC | `2000-05-07 00:00:00` |
+| `temperature` | `float64` | Temperatura do ar | `22.2` |
+| `humidity` | `float64` | Umidade relativa do ar | `68.0` |
+| `rainfall` | `float64` | Volume de chuva acumulada na hora | `0.0` |
+| `global_radiation` | `float64` | Radiação solar global incidente | `2163.31` |
+| `pressure` | `float64` | Pressão atmosférica | `886.1` |
+| `dew_point` | `float64` | Temperatura do ponto de orvalho | `16.0` |
+| `wind_speed` | `float64` | Velocidade média do vento | `1.3` |
+| `wind_gust` | `float64` | Rajada máxima de vento | `2.7` |
+| `wind_direction` | `float64` | Direção do vento em graus | `101.0` |
 
 ---
 
@@ -80,12 +80,6 @@ Este dataset contém as observações meteorológicas registradas por estação.
 
 Todos os registros utilizam o padrão UTC.
 
-## Exemplo
-
-```text
-2025-12-25 01:00:00 UTC
-```
-
 ## Conversão para Horário de Brasília
 
 Normalmente:
@@ -102,17 +96,9 @@ Exemplo:
 
 ---
 
-# Exemplo de Registro
+# Observação sobre Valores Ausentes
 
-| Campo | Valor |
-|---|---|
-| Estação | A001 |
-| Horário UTC | 2025-12-25 01:00 |
-| Temperatura | 22.2°C |
-| Umidade | 68% |
-| Chuva | 0 mm |
-| Vento | 1.3 m/s |
-| Direção do vento | 101° |
+Os registros mais antigos (início de operação de cada estação) tendem a ter todas as variáveis como `NaN`. Isso é esperado e indica períodos de instalação ou falha do equipamento. Recomenda-se filtrar por períodos com dados válidos antes de qualquer análise.
 
 ---
 
@@ -126,19 +112,35 @@ stations.parquet
 
 Este dataset contém os metadados das estações meteorológicas.
 
+**Total de estações:** 663
+
 ---
 
 ## Colunas do Dataset
 
-| Coluna | Descrição | Exemplo |
-|---|---|---|
-| `code` | Código da estação | `A001` |
-| `name` | Nome da estação | `GOIANIA` |
-| `altitude` | Altitude da estação | `742` |
-| `latitude` | Latitude geográfica | `-16.64` |
-| `longitude` | Longitude geográfica | `-49.22` |
-| `state` | Estado brasileiro | `GO` |
-| `start_operation` | Data de início de operação | `2000-01-01` |
+| Coluna | Tipo | Descrição | Exemplo |
+|---|---|---|---|
+| `code` | `object` (str) | Código alfanumérico da estação | `A565` |
+| `name` | `object` (str) | Nome da estação | `BAMBUI` |
+| `altitude` | `float64` | Altitude em metros | `697.0` |
+| `latitude` | `object` → `float64` | Latitude geográfica (alta precisão) | `-20.031111` |
+| `longitude` | `object` → `float64` | Longitude geográfica (alta precisão) | `-46.008889` |
+| `state` | `object` (str) | Sigla do estado brasileiro | `MG` |
+| `start_operation` | `datetime64[us]` | Data de início de operação | `2016-11-23` |
+
+> `latitude` e `longitude` são armazenados como strings de alta precisão decimal no parquet e devem ser convertidos para `float64` antes de uso numérico.
+
+---
+
+## Exemplos de Estações
+
+| code | name | altitude (m) | latitude | longitude | state | start_operation |
+|---|---|---|---|---|---|---|
+| A565 | BAMBUI | 697.00 | -20.031111 | -46.008889 | MG | 2016-11-23 |
+| A826 | ALEGRETE | 120.88 | -29.709167 | -55.525556 | RS | 2006-09-28 |
+| A924 | ALTA FLORESTA | 291.85 | -10.077222 | -56.179167 | MT | 2007-05-23 |
+| A021 | ARAGUAINA | 230.76 | -7.103889 | -48.201111 | TO | 2007-01-26 |
+| A502 | BARBACENA | 1168.76 | -21.228333 | -43.767778 | MG | 2002-12-05 |
 
 ---
 
@@ -174,7 +176,7 @@ Os dados podem ser utilizados para:
 
 ## Volume de Dados
 
-Como os dados possuem frequência horária ao longo de mais de 25 anos, o volume total é elevado.
+Como os dados possuem frequência horária ao longo de mais de 25 anos e 663 estações, o volume total é elevado.
 
 Isso permite:
 
@@ -188,8 +190,8 @@ Isso permite:
 # Observações Importantes
 
 - Os horários estão em UTC
-- Algumas estações podem possuir períodos sem dados
-- Valores faltantes podem existir
+- `latitude` e `longitude` exigem cast para `float64` antes de operações numéricas
+- Valores faltantes (`NaN`) são comuns, especialmente no início da série de cada estação
 - As unidades podem variar dependendo da origem da estação
 - Recomenda-se validação e limpeza dos dados antes de análises avançadas
 
@@ -197,4 +199,4 @@ Isso permite:
 
 # Resumo
 
-O projeto fornece uma base meteorológica histórica de alta resolução temporal para estudos climáticos, análises ambientais e desenvolvimento de soluções meteorológicas e analíticas.
+O projeto fornece uma base meteorológica histórica de alta resolução temporal com **663 estações** e dados desde **2000-05-07**, cobrindo todo o território brasileiro, para estudos climáticos, análises ambientais e desenvolvimento de soluções meteorológicas e analíticas.

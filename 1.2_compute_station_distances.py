@@ -44,12 +44,12 @@ FÓRMULAS UTILIZADAS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Input:
-    data/station.parquet
+    data/stations.parquet
         columns: code, name, altitude, latitude, longitude, state, start_operation
 
 Output:
     data/station_distances.parquet
-        columns: from_code (int), to_code (int),
+        columns: from_code (str), to_code (str),
                  distance_km (float32),
                  delta_altitude_m (float32),
                  effective_distance_km (float32)
@@ -59,7 +59,7 @@ Usage after generation:
     distances = pd.read_parquet("data/station_distances.parquet")
 
     # Sort a subset of codes by effective distance from a reference station
-    def sort_by_distance(ref_code: int, codes: list[int]) -> list[int]:
+    def sort_by_distance(ref_code: str, codes: list[str]) -> list[str]:
         group = distances.loc[ref_code]           # fast index lookup
         return group[group["to_code"].isin(codes)]["to_code"].tolist()
 """
@@ -72,7 +72,7 @@ import pandas as pd
 from sklearn.metrics.pairwise import haversine_distances
 
 DATA_DIR = Path(__file__).parent / "data"
-INPUT_PATH = DATA_DIR / "station.parquet"
+INPUT_PATH = DATA_DIR / "stations.parquet"
 OUTPUT_PATH = DATA_DIR / "station_distances.parquet"
 
 EARTH_RADIUS_KM = 6_371.0
@@ -84,8 +84,10 @@ def load_stations() -> pd.DataFrame:
         sys.exit(1)
 
     df = pd.read_parquet(INPUT_PATH, columns=["code", "latitude", "longitude", "altitude"])
+    df["latitude"]  = df["latitude"].astype(float)
+    df["longitude"] = df["longitude"].astype(float)
+    df["altitude"]  = df["altitude"].astype(float)
     df = df.dropna(subset=["latitude", "longitude", "altitude"]).drop_duplicates(subset="code")
-    df["code"] = df["code"].astype(int)
     print(f"Stations loaded: {len(df)}")
     return df.reset_index(drop=True)
 
@@ -141,8 +143,8 @@ def main():
     save(df)
 
     # Sanity check — show 5 nearest stations to the first code
-    sample_code = int(stations["code"].iloc[0])
-    result = df.loc[sample_code].head(5)
+    sample_code = stations["code"].iloc[0]
+    result = df[df["from_code"] == sample_code].head(5)
     print(f"\nNearest 5 stations to code {sample_code} (by effective_distance_km):")
     print(result.to_string())
 

@@ -75,6 +75,46 @@ Depois abra `main.ipynb` no navegador.
 
 ---
 
+---
+
+## Pipeline de Dados
+
+Com o ambiente ativado (`conda activate climate-engine`), execute os scripts na ordem abaixo.
+
+---
+
+### 1.1 — Download dos dados
+
+Baixa os arquivos `station.parquet` e `weather_measurements.parquet` do Google Drive para a pasta `data/`.
+
+```bash
+python 1.1_download_data.py
+```
+
+---
+
+### 1.2 — Cálculo de distâncias entre estações
+
+Gera o arquivo `data/station_distances.parquet` com as distâncias par-a-par entre todas as estações meteorológicas.
+
+```bash
+python 1.2_compute_station_distances.py
+```
+
+Colunas geradas:
+
+| Coluna | Descrição |
+|---|---|
+| `from_code` | Código da estação de origem |
+| `to_code` | Código da estação de destino |
+| `distance_km` | Distância geodésica (Haversine) em km |
+| `delta_altitude_m` | Diferença de altitude em metros |
+| `effective_distance_km` | Distância 3D ponderada (Haversine + altitude) |
+
+> Requer que o Passo 1.1 tenha sido executado antes.
+
+---
+
 ### Atualizar dependências
 
 Se você instalar novos pacotes e quiser salvar no `environment.yml`:
