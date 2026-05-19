@@ -158,6 +158,47 @@ Arquivos gerados em `data/`:
 
 ---
 
+### 2.0 — Métricas de baseline (vizinho mais próximo)
+
+Avalia o vizinho mais próximo (n01) como estimador da medição real de cada estação. Serve como baseline mínimo — qualquer modelo treinado deve superar essas métricas.
+
+```bash
+python 2.0_baseline_metrics.py
+```
+
+Métricas calculadas por variável: MAE, RMSE, R², Bias, r (Pearson).
+
+Arquivo gerado em `results/`:
+
+| Arquivo | Descrição |
+|---|---|
+| `2.0_baseline_metrics.csv` | Métricas por variável (n01 vs measurement) |
+
+> Requer o Passo 1.5 executado antes.
+
+---
+
+### 3.0 — Regressão Linear
+
+Treina um modelo OLS (β = (XᵀX)⁻¹Xᵀy) por variável usando as features dos vizinhos. Antes do treino, valida a partir de qual data existem ≥ 15 estações com dado disponível (`MIN_STATIONS`).
+
+```bash
+python 3.0_linear_regression.py
+```
+
+Features (104 colunas): medições dos vizinhos (n01..n20), distâncias (d01..d20), delta de altitude (a01..a20), azimute sin/cos (b01..b20), encodings temporais cíclicos (hour, doy).
+
+Arquivos gerados em `results/`:
+
+| Arquivo | Descrição |
+|---|---|
+| `3.0_linear_regression_{variable}.csv` | Predições + todas as colunas dos vizinhos + `training_start` |
+| `3.0_linear_regression_metrics.csv` | Resumo de métricas por variável |
+
+> Requer o Passo 1.5 executado antes.
+
+---
+
 ### Atualizar dependências
 
 Se você instalar novos pacotes e quiser salvar no `environment.yml`:
