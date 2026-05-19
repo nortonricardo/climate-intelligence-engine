@@ -99,6 +99,10 @@ OUTPUT_SCHEMA = pa.schema([
     *[(f"n{i+1:02d}", pa.float32()) for i in range(K)],
     *[(f"d{i+1:02d}", pa.float32()) for i in range(K)],
     *[(f"a{i+1:02d}", pa.float32()) for i in range(K)],
+    ("hour_sin",    pa.float32()),
+    ("hour_cos",    pa.float32()),
+    ("doy_sin",     pa.float32()),
+    ("doy_cos",     pa.float32()),
 ])
 
 
@@ -233,6 +237,8 @@ def process_variable(
             )
 
             n = len(valid_times)
+            hours = valid_times.hour.to_numpy().astype(np.float32)
+            doys  = valid_times.day_of_year.to_numpy().astype(np.float32)
             table = pa.table(
                 {
                     "code":        pa.array([target_code] * n, type=pa.string()),
@@ -241,6 +247,10 @@ def process_variable(
                     **{f"n{i+1:02d}": pa.array(top_val[:, i],  type=pa.float32()) for i in range(K)},
                     **{f"d{i+1:02d}": pa.array(top_dist[:, i], type=pa.float32()) for i in range(K)},
                     **{f"a{i+1:02d}": pa.array(top_dalt[:, i], type=pa.float32()) for i in range(K)},
+                    "hour_sin": pa.array(np.sin(2 * np.pi * hours / 24),  type=pa.float32()),
+                    "hour_cos": pa.array(np.cos(2 * np.pi * hours / 24),  type=pa.float32()),
+                    "doy_sin":  pa.array(np.sin(2 * np.pi * doys  / 365), type=pa.float32()),
+                    "doy_cos":  pa.array(np.cos(2 * np.pi * doys  / 365), type=pa.float32()),
                 },
                 schema=OUTPUT_SCHEMA,
             )
