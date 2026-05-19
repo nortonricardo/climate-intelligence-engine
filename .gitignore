@@ -1,0 +1,16 @@
+# Dados — não sobem para o git
+data/*
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.ipynb_checkpoints/
+
+# Ambientes
+.env
+*.egg-info/
+
+# MacOS
+.DS_Store

@@ -1,0 +1,51 @@
+name: climate-engine
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Python
+  - python=3.11
+
+  # Dados e análise
+  - numpy
+  - pandas
+  - scipy
+
+  # Machine Learning
+  - scikit-learn        # regressão linear, KNN, random forest
+  - xgboost             # gradient boosting (útil para dados climáticos)
+  - lightgbm
+
+  # Deep Learning (redes densas + transformers)
+  - pytorch::pytorch
+  - pytorch::torchvision
+  - pytorch::torchaudio
+  - cpuonly             # remova esta linha se tiver GPU
+
+  # Dados climáticos / geoespaciais
+  - xarray              # dados multidimensionais (NetCDF, GRIB)
+  - netcdf4
+  - cfgrib
+  - cartopy             # mapas e projeções
+  - geopandas
+  - rioxarray
+
+  # Visualização
+  - matplotlib
+  - seaborn
+  - plotly
+
+  # Notebooks e dev
+  - jupyter
+  - ipykernel
+  - tqdm
+
+  # Utilitários
+  - pip
+  - pip:
+    - transformers       # HuggingFace Transformers (BERT, TimeSeries, etc.)
+    - datasets
+    - evaluate
+    - mlflow             # tracking de experimentos
+    - hydra-core         # gestão de configs
+    - gdown              # download de arquivos do Google Drive
