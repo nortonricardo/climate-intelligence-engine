@@ -136,6 +136,28 @@ Arquivos gerados em `data/`:
 
 ---
 
+### 1.5 — Enriquecimento com vizinhos mais próximos
+
+Para cada variável gerada pelo 1.4, adiciona as medições das 20 estações mais próximas disponíveis no mesmo timestamp.
+
+```bash
+python 1.5_build_neighbors.py
+```
+
+Arquivos gerados em `data/`:
+
+| Arquivo | Schema |
+|---|---|
+| `temperature_neighbors.parquet` | code, time, measurement, n01…n20 |
+| `humidity_neighbors.parquet` | idem |
+| `rainfall_neighbors.parquet` | idem |
+| `global_radiation_neighbors.parquet` | idem |
+| `pressure_neighbors.parquet` | idem |
+
+> Requer os Passos 1.2 e 1.4 executados antes.
+
+---
+
 ### Atualizar dependências
 
 Se você instalar novos pacotes e quiser salvar no `environment.yml`:
