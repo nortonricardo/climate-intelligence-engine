@@ -78,8 +78,8 @@ STATIONS_PATH  = DATA_DIR / "stations.parquet"
 K = 20  # vizinhos a reter
 
 # Filtro de data — defina None para processar o dataset completo
-DATE_START = "2025-03-25"   # ou None
-DATE_END   = "2025-03-25"   # ou None
+DATE_START = None   # ex: "2025-03-25"
+DATE_END   = None   # ex: "2025-03-25"
 
 VARIABLES = [
     "temperature",
@@ -89,8 +89,11 @@ VARIABLES = [
     "pressure",
 ]
 
-# Variáveis cujo measurement deve ser arredondado para 2 casas decimais
-ROUND_2 = {"temperature"}
+# Defina None para rodar todas as variáveis, ou uma lista para filtrar
+VARIABLES_TO_RUN = ["temperature"]  # ou None
+
+# Todas as variáveis são arredondadas para 2 casas decimais
+ROUND_2 = set(VARIABLES)
 
 
 # ── schema PyArrow ────────────────────────────────────────────────────────────
@@ -315,7 +318,9 @@ def process_variable(
 def main() -> None:
     print("=== 1.5 Build Neighbors ===")
     if DATE_START or DATE_END:
-        print(f"  Filtro: {DATE_START or 'início'} → {DATE_END or 'fim'}")
+        print(f"  Datas    : {DATE_START or 'início'} → {DATE_END or 'fim'}")
+    if VARIABLES_TO_RUN is not None:
+        print(f"  Variáveis: {VARIABLES_TO_RUN}")
     print()
 
     if not DISTANCES_PATH.exists():
@@ -326,7 +331,8 @@ def main() -> None:
     dist_index = load_distance_index()
     print(f"Estações indexadas: {len(dist_index):,}")
 
-    for variable in VARIABLES:
+    variables = VARIABLES_TO_RUN if VARIABLES_TO_RUN is not None else VARIABLES
+    for variable in variables:
         process_variable(variable, dist_index, start=DATE_START, end=DATE_END)
 
     print("\nConcluído.")
