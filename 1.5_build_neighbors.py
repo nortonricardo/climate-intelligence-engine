@@ -8,16 +8,18 @@ timestamp.
 
 Schema de saída (um arquivo por variável):
 
-    code         — estação-alvo
-    time         — timestamp da medição (UTC)
-    measurement  — valor da estação-alvo
-    n01 … n20    — medição da k-ésima estação vizinha disponível
-    d01 … d20    — distance_km entre alvo e esse vizinho
-    a01 … a20    — delta_altitude_m entre alvo e esse vizinho
+    code           — estação-alvo
+    time           — timestamp da medição (UTC)
+    measurement    — valor da estação-alvo
+    n01 … n20      — medição da k-ésima estação vizinha disponível
+    d01 … d20      — distance_km entre alvo e esse vizinho
+    a01 … a20      — delta_altitude_m entre alvo e esse vizinho
+    b01_sin…b20_sin — sin(azimute) do vizinho em relação ao alvo
+    b01_cos…b20_cos — cos(azimute) do vizinho em relação ao alvo
 
-Os slots d_k / a_k variam por linha porque o vizinho que ocupa o slot k
-muda conforme a disponibilidade de dados naquele timestamp.
-NaN em n_k implica NaN em d_k e a_k (menos de K vizinhos disponíveis).
+Os slots variam por linha porque o vizinho que ocupa o slot k muda
+conforme a disponibilidade de dados naquele timestamp.
+NaN em n_k implica NaN em d_k, a_k, b_k_sin e b_k_cos.
 
 "Disponível" significa: a estação-vizinha possui valor não-nulo para
 aquela variável naquele timestamp exato.
@@ -71,6 +73,7 @@ from tqdm import tqdm
 
 DATA_DIR       = Path(__file__).parent / "data"
 DISTANCES_PATH = DATA_DIR / "station_distances.parquet"
+STATIONS_PATH  = DATA_DIR / "stations.parquet"
 
 K = 20  # vizinhos a reter
 
@@ -96,9 +99,11 @@ OUTPUT_SCHEMA = pa.schema([
     ("code",        pa.string()),
     ("time",        pa.timestamp("us")),
     ("measurement", pa.float32()),
-    *[(f"n{i+1:02d}", pa.float32()) for i in range(K)],
-    *[(f"d{i+1:02d}", pa.float32()) for i in range(K)],
-    *[(f"a{i+1:02d}", pa.float32()) for i in range(K)],
+    *[(f"n{i+1:02d}",     pa.float32()) for i in range(K)],
+    *[(f"d{i+1:02d}",     pa.float32()) for i in range(K)],
+    *[(f"a{i+1:02d}",     pa.float32()) for i in range(K)],
+    *[(f"b{i+1:02d}_sin", pa.float32()) for i in range(K)],
+    *[(f"b{i+1:02d}_cos", pa.float32()) for i in range(K)],
     ("hour_sin",    pa.float32()),
     ("hour_cos",    pa.float32()),
     ("doy_sin",     pa.float32()),
@@ -108,21 +113,54 @@ OUTPUT_SCHEMA = pa.schema([
 
 # ── utilidades ────────────────────────────────────────────────────────────────
 
-DistanceIndex = dict[str, tuple[list[str], np.ndarray, np.ndarray]]
+DistanceIndex = dict[str, tuple[list[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+
+
+def _bearing_sin_cos(
+    lat1: float, lon1: float,
+    lats2: np.ndarray, lons2: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized azimute (sin, cos) de um ponto de origem para N destinos."""
+    lat1_r  = np.radians(lat1)
+    lon1_r  = np.radians(lon1)
+    lats2_r = np.radians(lats2)
+    lons2_r = np.radians(lons2)
+    dlon = lons2_r - lon1_r
+    x = np.sin(dlon) * np.cos(lats2_r)
+    y = np.cos(lat1_r) * np.sin(lats2_r) - np.sin(lat1_r) * np.cos(lats2_r) * np.cos(dlon)
+    b = np.arctan2(x, y)  # radianos, -π a π
+    return np.sin(b).astype(np.float32), np.cos(b).astype(np.float32)
 
 
 def load_distance_index() -> DistanceIndex:
     """
-    Retorna {from_code: (to_codes, distance_km_arr, delta_altitude_arr)}
+    Retorna {from_code: (to_codes, distance_km_arr, delta_altitude_arr,
+                         bearing_sin_arr, bearing_cos_arr)}
     ordenados por effective_distance_km (ordem já garantida pelo 1.2).
     """
-    dist = pd.read_parquet(DISTANCES_PATH).reset_index()
+    dist     = pd.read_parquet(DISTANCES_PATH).reset_index()
+    stations = (
+        pd.read_parquet(STATIONS_PATH, columns=["code", "latitude", "longitude"])
+        .set_index("code")
+        .astype({"latitude": np.float64, "longitude": np.float64})
+    )
+
     index: DistanceIndex = {}
     for from_code, group in dist.groupby("from_code"):
+        if from_code not in stations.index:
+            continue
+        lat1 = stations.at[from_code, "latitude"]
+        lon1 = stations.at[from_code, "longitude"]
+        to_codes = group["to_code"].tolist()
+        lats2 = stations.loc[group["to_code"].values, "latitude"].values
+        lons2 = stations.loc[group["to_code"].values, "longitude"].values
+        bsin, bcos = _bearing_sin_cos(lat1, lon1, lats2, lons2)
         index[from_code] = (
-            group["to_code"].tolist(),
+            to_codes,
             group["distance_km"].values.astype(np.float32),
             group["delta_altitude_m"].values.astype(np.float32),
+            bsin,
+            bcos,
         )
     return index
 
@@ -131,15 +169,16 @@ def first_k_valid_multi(
     val_arr:  np.ndarray,
     dist_arr: np.ndarray,
     dalt_arr: np.ndarray,
+    bsin_arr: np.ndarray,
+    bcos_arr: np.ndarray,
     k: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Para cada linha seleciona os k primeiros slots não-NaN (baseado em
-    val_arr) e aplica a mesma seleção em dist_arr e dalt_arr.
+    val_arr) e aplica a mesma seleção em todos os arrays estáticos 1-D.
 
-    Entradas : (n_rows, n_cols) — dist_arr e dalt_arr podem ser 1-D
-               (broadcastados para todas as linhas se forem estáticos).
-    Saídas   : três arrays (n_rows, k) com NaN nos slots não preenchidos.
+    Entradas : val_arr (n_rows, n_cols); demais são 1-D estáticos por estação.
+    Saídas   : cinco arrays (n_rows, k) com NaN nos slots não preenchidos.
     """
     mask     = ~np.isnan(val_arr)
     cumcount = np.cumsum(mask, axis=1)
@@ -151,12 +190,16 @@ def first_k_valid_multi(
     top_val  = np.full((n_rows, k), np.nan, dtype=np.float32)
     top_dist = np.full((n_rows, k), np.nan, dtype=np.float32)
     top_dalt = np.full((n_rows, k), np.nan, dtype=np.float32)
+    top_bsin = np.full((n_rows, k), np.nan, dtype=np.float32)
+    top_bcos = np.full((n_rows, k), np.nan, dtype=np.float32)
 
     top_val[rows, positions]  = val_arr[rows, cols]
-    top_dist[rows, positions] = dist_arr[cols]   # 1-D broadcast (static per station)
+    top_dist[rows, positions] = dist_arr[cols]
     top_dalt[rows, positions] = dalt_arr[cols]
+    top_bsin[rows, positions] = bsin_arr[cols]
+    top_bcos[rows, positions] = bcos_arr[cols]
 
-    return top_val, top_dist, top_dalt
+    return top_val, top_dist, top_dalt, top_bsin, top_bcos
 
 
 # ── processamento por variável ────────────────────────────────────────────────
@@ -204,13 +247,16 @@ def process_variable(
             if target_code not in dist_index:
                 continue
 
-            all_codes, all_dist, all_dalt = dist_index[target_code]
+            all_codes, all_dist, all_dalt, all_bsin, all_bcos = dist_index[target_code]
 
             # filtra vizinhos presentes nesta variável, mantendo a ordem
             mask_present = [c in code_to_idx for c in all_codes]
-            ordered   = [c for c, ok in zip(all_codes, mask_present) if ok]
-            dist_row  = all_dist[[i for i, ok in enumerate(mask_present) if ok]]
-            dalt_row  = all_dalt[[i for i, ok in enumerate(mask_present) if ok]]
+            present_idx  = [i for i, ok in enumerate(mask_present) if ok]
+            ordered  = [all_codes[i] for i in present_idx]
+            dist_row = all_dist[present_idx]
+            dalt_row = all_dalt[present_idx]
+            bsin_row = all_bsin[present_idx]
+            bcos_row = all_bcos[present_idx]
 
             if not ordered:
                 continue
@@ -231,9 +277,9 @@ def process_variable(
             # sub-matrix de vizinhos
             nbr_matrix = pivot_arr[np.ix_(valid_row, nbr_idx)]
 
-            # primeiros K não-NaN + distâncias/altitudes correspondentes
-            top_val, top_dist, top_dalt = first_k_valid_multi(
-                nbr_matrix, dist_row, dalt_row, K
+            # primeiros K não-NaN + features espaciais correspondentes
+            top_val, top_dist, top_dalt, top_bsin, top_bcos = first_k_valid_multi(
+                nbr_matrix, dist_row, dalt_row, bsin_row, bcos_row, K
             )
 
             n = len(valid_times)
@@ -244,9 +290,11 @@ def process_variable(
                     "code":        pa.array([target_code] * n, type=pa.string()),
                     "time":        pa.array(valid_times.to_numpy(), type=pa.timestamp("us")),
                     "measurement": pa.array(valid_target,           type=pa.float32()),
-                    **{f"n{i+1:02d}": pa.array(top_val[:, i],  type=pa.float32()) for i in range(K)},
-                    **{f"d{i+1:02d}": pa.array(top_dist[:, i], type=pa.float32()) for i in range(K)},
-                    **{f"a{i+1:02d}": pa.array(top_dalt[:, i], type=pa.float32()) for i in range(K)},
+                    **{f"n{i+1:02d}":     pa.array(top_val[:, i],  type=pa.float32()) for i in range(K)},
+                    **{f"d{i+1:02d}":     pa.array(top_dist[:, i], type=pa.float32()) for i in range(K)},
+                    **{f"a{i+1:02d}":     pa.array(top_dalt[:, i], type=pa.float32()) for i in range(K)},
+                    **{f"b{i+1:02d}_sin": pa.array(top_bsin[:, i], type=pa.float32()) for i in range(K)},
+                    **{f"b{i+1:02d}_cos": pa.array(top_bcos[:, i], type=pa.float32()) for i in range(K)},
                     "hour_sin": pa.array(np.sin(2 * np.pi * hours / 24),  type=pa.float32()),
                     "hour_cos": pa.array(np.cos(2 * np.pi * hours / 24),  type=pa.float32()),
                     "doy_sin":  pa.array(np.sin(2 * np.pi * doys  / 365), type=pa.float32()),
