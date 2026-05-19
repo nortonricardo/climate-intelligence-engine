@@ -113,6 +113,29 @@ Colunas geradas:
 
 ---
 
+### 1.4 — Limpeza e separação das variáveis
+
+Lê `weather_measurements.parquet` e gera um parquet por variável com a estrutura `code / time / measurement`, removendo todos os NaN.
+Radiação solar negativa é substituída por 0 (ausência de luz).
+
+```bash
+python 1.4_clean_data.py
+```
+
+Arquivos gerados em `data/`:
+
+| Arquivo | Variável |
+|---|---|
+| `temperature.parquet` | Temperatura (°C) |
+| `humidity.parquet` | Umidade relativa (%) |
+| `rainfall.parquet` | Chuva (mm/h) |
+| `global_radiation.parquet` | Radiação solar (KJ/m²) |
+| `pressure.parquet` | Pressão atmosférica (hPa) |
+
+> Requer que o Passo 1.1 tenha sido executado antes.
+
+---
+
 ### Atualizar dependências
 
 Se você instalar novos pacotes e quiser salvar no `environment.yml`:
