@@ -44,25 +44,16 @@ from utils import (
     RESULTS_DIR as _BASE_RESULTS,
     VARIABLES,
     compute_metrics,
+    get_feature_cols,
     load_train,
     load_test,
     save_metrics,
 )
 
-RESULTS_DIR = _BASE_RESULTS / "3.0_linear_regression"
-
-K          = 15
-CHUNK_SIZE = 2_000_000   # linhas por chunk para acumulação XᵀX
-VARIABLES_TO_RUN = None  # None = todas; ou ex: ["temperature"]
-
-FEATURE_COLS = (
-    [f"n{i+1:02d}"     for i in range(K)]
-    + [f"d{i+1:02d}"   for i in range(K)]
-    + [f"a{i+1:02d}"   for i in range(K)]
-    + [f"b{i+1:02d}_sin" for i in range(K)]
-    + [f"b{i+1:02d}_cos" for i in range(K)]
-    + ["hour_sin", "hour_cos", "doy_sin", "doy_cos"]
-)
+RESULTS_DIR  = _BASE_RESULTS / "3.0_linear_regression"
+CHUNK_SIZE   = 2_000_000   # linhas por chunk para acumulação XᵀX
+VARIABLES_TO_RUN = None    # None = todas; ou ex: ["temperature"]
+FEATURE_COLS = get_feature_cols(k=15)
 
 
 # ── OLS via equação normal em chunks ─────────────────────────────────────────

@@ -4,9 +4,13 @@ utils.py — funções compartilhadas entre os scripts do pipeline.
 Métricas (numpy puro, sem sklearn/scipy):
     mae, rmse, r2, bias, pearsonr, compute_metrics
 
+Features:
+    get_feature_cols(k)  — lista de colunas de features para k vizinhos
+
 I/O:
     load_train, load_test, load_train_test
     save_metrics
+    load_scaler
 
 Paths centralizados:
     DATA_DIR, MODELS_DIR, RESULTS_DIR
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 
@@ -72,6 +77,23 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     }
 
 
+# ── features ─────────────────────────────────────────────────────────────────
+
+def get_feature_cols(k: int = 15) -> list[str]:
+    """
+    Retorna a lista ordenada de colunas de features para k vizinhos.
+    Ordem: n, d, a, b_sin, b_cos, temporais cíclicos.
+    """
+    return (
+        [f"n{i+1:02d}"     for i in range(k)]
+        + [f"d{i+1:02d}"   for i in range(k)]
+        + [f"a{i+1:02d}"   for i in range(k)]
+        + [f"b{i+1:02d}_sin" for i in range(k)]
+        + [f"b{i+1:02d}_cos" for i in range(k)]
+        + ["hour_sin", "hour_cos", "doy_sin", "doy_cos"]
+    )
+
+
 # ── I/O ───────────────────────────────────────────────────────────────────────
 
 def load_train(variable: str, columns: list[str] | None = None) -> pd.DataFrame:
@@ -89,6 +111,16 @@ def load_train_test(
     columns: list[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     return load_train(variable, columns), load_test(variable, columns)
+
+
+def load_scaler(variable: str) -> tuple:
+    """
+    Carrega o scaler salvo pelo 1.6.
+    Retorna (scaler, cols) onde scaler é o MinMaxScaler e cols são as colunas escaladas.
+    """
+    path   = MODELS_DIR / f"scaler_{variable}.scaler"
+    bundle = joblib.load(path)
+    return bundle["scaler"], bundle["cols"]
 
 
 def save_metrics(
