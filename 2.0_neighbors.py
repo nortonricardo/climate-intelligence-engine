@@ -27,38 +27,12 @@ Usage:
     python 2.0_neighbors.py
 """
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
-DATA_DIR    = Path(__file__).parent / "data"
-RESULTS_DIR = Path(__file__).parent / "results" / "2.0_neighbors"
+from utils import VARIABLES, compute_metrics, load_test, RESULTS_DIR as _BASE_RESULTS
 
-VARIABLES = [
-    "temperature",
-    "humidity",
-    "rainfall",
-    "global_radiation",
-    "pressure",
-]
-
-
-def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    residuals = y_true - y_pred
-    ss_res    = np.sum(residuals ** 2)
-    ss_tot    = np.sum((y_true - y_true.mean()) ** 2)
-
-    mae  = float(np.mean(np.abs(residuals)))
-    rmse = float(np.sqrt(np.mean(residuals ** 2)))
-    r2   = float(1 - ss_res / ss_tot) if ss_tot > 0 else np.nan
-    bias = float(np.mean(residuals))
-    y_m    = y_true - y_true.mean()
-    yhat_m = y_pred - y_pred.mean()
-    denom  = np.sqrt(np.sum(y_m ** 2)) * np.sqrt(np.sum(yhat_m ** 2))
-    r      = float(np.sum(y_m * yhat_m) / denom) if denom > 0 else np.nan
-
-    return {"MAE": mae, "RMSE": rmse, "R²": r2, "Bias": bias, "r": r}
+RESULTS_DIR = _BASE_RESULTS / "2.0_neighbors"
 
 
 def main() -> None:
@@ -67,12 +41,11 @@ def main() -> None:
 
     rows = []
     for variable in VARIABLES:
-        path = DATA_DIR / f"{variable}_test_scaled.parquet"
-        if not path.exists():
-            print(f"  SKIP {variable}: {path.name} não encontrado — rode 1.6 primeiro.")
+        try:
+            df = load_test(variable, columns=["measurement", "n01"])
+        except FileNotFoundError:
+            print(f"  SKIP {variable}: {variable}_test_scaled.parquet não encontrado — rode 1.6 primeiro.")
             continue
-
-        df = pd.read_parquet(path, columns=["measurement", "n01"])
 
         n_nan   = int(df["n01"].isna().sum())
         df      = df.dropna(subset=["n01"])

@@ -40,7 +40,6 @@ Usage:
 from __future__ import annotations
 
 import multiprocessing as mp
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -51,22 +50,22 @@ try:
 except ImportError:
     HAS_CUPY = False
 
-DATA_DIR    = Path(__file__).parent / "data"
-RESULTS_DIR = Path(__file__).parent / "results" / "3.0_linear_regression"
+from utils import (
+    RESULTS_DIR as _BASE_RESULTS,
+    VARIABLES,
+    compute_metrics,
+    load_train,
+    load_test,
+    save_metrics,
+)
+
+RESULTS_DIR = _BASE_RESULTS / "3.0_linear_regression"
 
 K          = 15
 CHUNK_SIZE = 2_000_000
 N_GPUS     = 5
 
 VARIABLES_TO_RUN = None
-
-VARIABLES = [
-    "temperature",
-    "humidity",
-    "rainfall",
-    "global_radiation",
-    "pressure",
-]
 
 NEIGHBOR_COLS = (
     [f"n{i+1:02d}" for i in range(K)]
@@ -77,29 +76,6 @@ NEIGHBOR_COLS = (
 )
 TEMPORAL_COLS = ["hour_sin", "hour_cos", "doy_sin", "doy_cos"]
 FEATURE_COLS  = NEIGHBOR_COLS + TEMPORAL_COLS
-
-
-# ── métricas (numpy puro) ─────────────────────────────────────────────────────
-
-def _pearsonr(y: np.ndarray, yhat: np.ndarray) -> float:
-    y_m    = y    - y.mean()
-    yhat_m = yhat - yhat.mean()
-    denom  = np.sqrt(np.sum(y_m ** 2)) * np.sqrt(np.sum(yhat_m ** 2))
-    return float(np.sum(y_m * yhat_m) / denom) if denom > 0 else np.nan
-
-
-def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    residuals = y_true - y_pred
-    ss_res    = np.sum(residuals ** 2)
-    ss_tot    = np.sum((y_true - y_true.mean()) ** 2)
-
-    mae  = float(np.mean(np.abs(residuals)))
-    rmse = float(np.sqrt(np.mean(residuals ** 2)))
-    r2   = float(1 - ss_res / ss_tot) if ss_tot > 0 else np.nan
-    bias = float(np.mean(residuals))
-    r    = _pearsonr(y_true, y_pred)
-
-    return {"MAE": mae, "RMSE": rmse, "R²": r2, "Bias": bias, "r": r}
 
 
 # ── OLS — equação normal em chunks ────────────────────────────────────────────
@@ -144,13 +120,12 @@ def build_X(df: pd.DataFrame) -> np.ndarray:
 # ── processamento por variável ────────────────────────────────────────────────
 
 def process_variable(variable: str, gpu_id: int = 0) -> dict | None:
-    train_path = DATA_DIR / f"{variable}_train_scaled.parquet"
-    test_path  = DATA_DIR / f"{variable}_test_scaled.parquet"
-
-    for p in (train_path, test_path):
-        if not p.exists():
-            print(f"  SKIP {variable}: {p.name} não encontrado — rode 1.6 primeiro.")
-            return None
+    try:
+        train_df = load_train(variable)
+        test_df  = load_test(variable)
+    except FileNotFoundError as e:
+        print(f"  SKIP {variable}: {e.filename} não encontrado — rode 1.6 primeiro.")
+        return None
 
     if HAS_CUPY:
         cp.cuda.Device(gpu_id).use()
@@ -159,7 +134,6 @@ def process_variable(variable: str, gpu_id: int = 0) -> dict | None:
     print(f"\n{prefix}")
 
     # treino
-    train_df = pd.read_parquet(train_path)
     X_train  = build_X(train_df)
     y_train  = train_df["measurement"].values.astype(np.float64)
     n_train  = len(train_df)
@@ -170,7 +144,6 @@ def process_variable(variable: str, gpu_id: int = 0) -> dict | None:
     del train_df, X_train, y_train
 
     # teste
-    test_df = pd.read_parquet(test_path)
     X_test  = build_X(test_df)
     y_test  = test_df["measurement"].values.astype(np.float64)
     n_test  = len(test_df)
@@ -190,11 +163,10 @@ def process_variable(variable: str, gpu_id: int = 0) -> dict | None:
     # salva modelo e métricas por variável
     var_dir = RESULTS_DIR / variable
     var_dir.mkdir(parents=True, exist_ok=True)
-
     np.save(var_dir / "model.npy", beta)
 
-    pd.DataFrame([metrics]).round(4).to_csv(var_dir / "metrics.csv", index=False)
-    print(f"  → {var_dir}/model.npy + metrics.csv")
+    out = save_metrics(metrics, RESULTS_DIR, variable, extra_cols={"n_train": n_train, "n_test": n_test})
+    print(f"  → {var_dir}/model.npy + {out.name}")
 
     return {"variable": variable, "n_train": n_train, "n_test": n_test, **metrics}
 
