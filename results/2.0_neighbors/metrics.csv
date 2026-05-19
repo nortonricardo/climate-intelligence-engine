@@ -1,0 +1,2 @@
+variable,n,MAE,RMSE,R²,Bias,r
+temperature,17248096,0.067,0.0931,0.8079,-0.0001,0.904

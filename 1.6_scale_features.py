@@ -1,27 +1,17 @@
 """
-1.6 — Split treino/teste e normalização (StandardScaler).
+1.6 — Split treino/teste e normalização MinMax (0–1).
 
 Para cada variável:
-  1. Filtra dados a partir de START_YEAR — período com rede densa o suficiente.
-  2. Remove linhas onde menos de MIN_STATIONS vizinhos têm dado disponível
-     (n01..n{MIN_STATIONS} NaN). Após esse filtro, n01..n15 são garantidamente
-     não-NaN em todas as linhas do dataset resultante.
-  3. Divide temporalmente o conjunto usável pelo 80º percentil de timestamps:
-       treino — timestamps até o corte  (TRAIN_RATIO = 0.8)
-       teste  — timestamps após o corte (0.2)
-     O corte é feito por timestamp único, garantindo que nenhuma estação
-     apareça no mesmo período em treino e teste.
-  4. Ajusta o StandardScaler SOMENTE no conjunto de treino (evita leakage).
-  5. Transforma treino e teste com o mesmo scaler.
+  1. Filtra dados a partir de START_YEAR (2002 = primeiro ano com ≥15 vizinhos).
+  2. Remove colunas dos slots 16-20 (K fixo em 15).
+  3. Remove linhas com qualquer NaN em n01..n15 (após drop — mais seguro).
+  4. Ajusta MinMaxScaler com clip de percentil (CLIP_PCT) para robustez a outliers.
+     x_scaled = clip((x − p1) / (p99 − p1), 0, 1)
+  5. Aplica scaler no dataset completo — exceto sin/cos (já em [−1,1]), code, time.
+  6. Divide temporalmente pelo TRAIN_RATIO (80/20) e ordena cada split por tempo.
 
-Scaler salvo como JSON — inclui metadados do split e estatísticas por coluna.
-Para inverse transform: x_orig = x_scaled * std + mean.
-
-ACELERAÇÃO GPU
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Transformação aplicada em chunks de CHUNK_SIZE linhas na GPU (float32).
-Com 5 GPUs e 5 variáveis, cada variável ocupa uma GPU via multiprocessing.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Sin/cos não são escalados: hour_sin/cos, doy_sin/cos e b{i}_sin/cos são
+matematicamente limitados a [−1, 1] e não precisam de normalização.
 
 Input:
     data/{variable}_neighbors.parquet
@@ -29,7 +19,7 @@ Input:
 Output:
     data/{variable}_train_scaled.parquet
     data/{variable}_test_scaled.parquet
-    models/1.6_scaler_{variable}.json
+    models/1.6_scaler_{variable}.scaler
 
 Usage:
     python 1.6_scale_features.py
@@ -37,229 +27,164 @@ Usage:
 
 from __future__ import annotations
 
-import json
-import multiprocessing as mp
 import time
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
 
-try:
-    import cupy as cp
-    HAS_CUPY = True
-except ImportError:
-    HAS_CUPY = False
+from utils import DATA_DIR, MODELS_DIR, VARIABLES
 
-DATA_DIR   = Path(__file__).parent / "data"
-MODELS_DIR = Path(__file__).parent / "models"
-
-N_GPUS       = 5
-CHUNK_SIZE   = 5_000_000  # linhas por chunk GPU (~2 GB em float32)
-MIN_STATIONS = 15          # vizinhos garantidos por linha; slots 16-20 são descartados
-K_NEIGHBORS  = 20          # total de slots no arquivo _neighbors (gerado pelo 1.5)
-START_YEAR   = 2010        # descarta dados antes deste ano (rede ainda esparsa)
-TRAIN_RATIO  = 0.8         # 80% treino, 20% teste (split temporal)
-
-# Colunas dos slots 16-20 que serão removidas antes de salvar
-DROP_COLS = (
-    [f"n{i+1:02d}"     for i in range(MIN_STATIONS, K_NEIGHBORS)]
-    + [f"d{i+1:02d}"   for i in range(MIN_STATIONS, K_NEIGHBORS)]
-    + [f"a{i+1:02d}"   for i in range(MIN_STATIONS, K_NEIGHBORS)]
-    + [f"b{i+1:02d}_sin" for i in range(MIN_STATIONS, K_NEIGHBORS)]
-    + [f"b{i+1:02d}_cos" for i in range(MIN_STATIONS, K_NEIGHBORS)]
-)
+K           = 15     # vizinhos usados; slots 16-20 são descartados
+START_YEAR  = 2002   # primeiro ano com ≥ 15 vizinhos disponíveis
+CLIP_PCT    = 1.0    # percentil de corte para outliers (1% inf e 1% sup)
+TRAIN_RATIO = 0.8
 
 VARIABLES_TO_RUN = None  # None = todas; ou ex: ["temperature"]
 
-VARIABLES = [
-    "temperature",
-    "humidity",
-    "rainfall",
-    "global_radiation",
-    "pressure",
-]
+# ── colunas derivadas de K ────────────────────────────────────────────────────
 
-SKIP_COLS = {"code", "time"}
+_K_MAX = 20
+DROP_COLS = (
+    [f"n{i+1:02d}"     for i in range(K, _K_MAX)]
+    + [f"d{i+1:02d}"   for i in range(K, _K_MAX)]
+    + [f"a{i+1:02d}"   for i in range(K, _K_MAX)]
+    + [f"b{i+1:02d}_sin" for i in range(K, _K_MAX)]
+    + [f"b{i+1:02d}_cos" for i in range(K, _K_MAX)]
+)
+
+NEIGHBOR_COLS = [f"n{i+1:02d}" for i in range(K)]  # colunas para filtro NaN
+
+# sin/cos já em [−1, 1] — não precisam de scaler
+SIN_COS_COLS = set(
+    [f"b{i+1:02d}_sin" for i in range(K)]
+    + [f"b{i+1:02d}_cos" for i in range(K)]
+    + ["hour_sin", "hour_cos", "doy_sin", "doy_cos"]
+)
+SKIP_COLS = {"code", "time"} | SIN_COS_COLS
 
 
-# ── filtros e split temporal ──────────────────────────────────────────────────
+# ── scaler MinMax com clip de percentil ───────────────────────────────────────
 
-def filter_usable(df: pd.DataFrame) -> pd.DataFrame:
+def fit_scaler(df: pd.DataFrame, cols: list[str]) -> MinMaxScaler:
     """
-    Remove linhas antes de START_YEAR e linhas com menos de MIN_STATIONS
-    vizinhos disponíveis. Após esse filtro, n01..n{MIN_STATIONS} são
-    garantidamente não-NaN em todo o dataset.
+    Cria um MinMaxScaler robusto a outliers:
+    clippa os dados ao intervalo [p1, p99] antes de ajustar,
+    para que o scaler não seja dominado por valores extremos.
     """
-    df = df[df["time"].dt.year >= START_YEAR]
-    threshold_cols = [f"n{i+1:02d}" for i in range(MIN_STATIONS)]
-    mask = df[threshold_cols].notna().sum(axis=1) >= MIN_STATIONS
-    return df[mask].reset_index(drop=True)
+    data   = df[cols].to_numpy(dtype=np.float64)
+    lowers = np.nanpercentile(data, CLIP_PCT,       axis=0)
+    uppers = np.nanpercentile(data, 100 - CLIP_PCT, axis=0)
+    data_clipped = np.clip(data, lowers, uppers)
 
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaler.fit(data_clipped)
+    return scaler
+
+
+def apply_scaler(df: pd.DataFrame, scaler: MinMaxScaler, cols: list[str]) -> pd.DataFrame:
+    """Transforma as colunas com o scaler ajustado. Modifica df in-place."""
+    data = df[cols].to_numpy(dtype=np.float64)
+    data = scaler.transform(data)        # já clippa para [0,1] pelo fit
+    np.clip(data, 0.0, 1.0, out=data)   # garante [0,1] mesmo para outliers reais
+    df[cols] = data.astype(np.float32)
+    return df
+
+
+# ── split temporal ────────────────────────────────────────────────────────────
 
 def split_by_time(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, str]:
-    """
-    Divide df pelo 80º percentil dos timestamps únicos.
-    Retorna (train_df, test_df, cutoff_date_str).
-    """
     times      = np.sort(df["time"].unique())
     cutoff_idx = max(1, int(len(times) * TRAIN_RATIO)) - 1
     cutoff     = times[cutoff_idx]
-    train_df   = df[df["time"] <= cutoff]
-    test_df    = df[df["time"] >  cutoff]
+    train_df   = df[df["time"] <= cutoff].sort_values("time").reset_index(drop=True)
+    test_df    = df[df["time"] >  cutoff].sort_values("time").reset_index(drop=True)
     return train_df, test_df, str(pd.Timestamp(cutoff).date())
-
-
-# ── scaler manual ─────────────────────────────────────────────────────────────
-
-def fit_scaler(df: pd.DataFrame, cols: list[str]) -> dict:
-    """
-    Computa mean e std por coluna ignorando NaN.
-    Deve ser chamado SOMENTE com dados de treino.
-    """
-    stats: dict[str, dict] = {}
-    for col in cols:
-        vals = df[col].to_numpy(dtype=np.float64)
-        vals = vals[~np.isnan(vals)]
-        if len(vals) == 0:
-            stats[col] = {"mean": 0.0, "std": 1.0}
-            continue
-        mean = float(vals.mean())
-        std  = float(vals.std())
-        stats[col] = {"mean": mean, "std": std if std > 0 else 1.0}
-    return stats
-
-
-def apply_scaler(
-    df: pd.DataFrame,
-    stats: dict,
-    gpu_id: int = 0,
-) -> pd.DataFrame:
-    """
-    Aplica (x − mean) / std em todas as colunas do stats.
-    NaN permanece NaN. Opera em float32. GPU com chunks.
-    """
-    cols  = list(stats.keys())
-    means = np.array([stats[c]["mean"] for c in cols], dtype=np.float32)
-    stds  = np.array([stats[c]["std"]  for c in cols], dtype=np.float32)
-    data  = df[cols].values.astype(np.float32)
-
-    if HAS_CUPY:
-        cp.cuda.Device(gpu_id).use()
-        means_gpu = cp.asarray(means)
-        stds_gpu  = cp.asarray(stds)
-        for s in range(0, len(data), CHUNK_SIZE):
-            chunk = cp.asarray(data[s : s + CHUNK_SIZE])
-            data[s : s + CHUNK_SIZE] = cp.asnumpy((chunk - means_gpu) / stds_gpu)
-    else:
-        for s in range(0, len(data), CHUNK_SIZE):
-            data[s : s + CHUNK_SIZE] = (data[s : s + CHUNK_SIZE] - means) / stds
-
-    out       = df.copy()
-    out[cols] = data
-    return out
 
 
 # ── processamento por variável ────────────────────────────────────────────────
 
-def process_variable(variable: str, gpu_id: int = 0) -> None:
+def process_variable(variable: str) -> None:
     path = DATA_DIR / f"{variable}_neighbors.parquet"
     if not path.exists():
         print(f"  SKIP {variable}: {path.name} não encontrado — rode 1.5 primeiro.")
         return
 
-    if HAS_CUPY:
-        cp.cuda.Device(gpu_id).use()
+    def _step(msg: str) -> None:
+        print(f"  [{time.time() - t0:6.1f}s] {msg}", flush=True)
 
-    t0    = time.time()
-    label = f"[GPU {gpu_id}][{variable}]" if HAS_CUPY else f"[{variable}]"
-    print(f"\n{label}")
+    t0 = time.time()
+    print(f"\n[{variable}]", flush=True)
 
+    # 1. lê parquet
+    _step("lendo parquet...")
     df = pd.read_parquet(path)
     if not pd.api.types.is_datetime64_any_dtype(df["time"]):
         df["time"] = pd.to_datetime(df["time"])
-    df = df.sort_values("time").reset_index(drop=True)
+    _step(f"parquet lido — {len(df):,} linhas × {df.shape[1]} colunas")
 
-    # 1. filtros: ano + mínimo de vizinhos
+    # 2. filtro de ano
     n_raw = len(df)
-    df    = filter_usable(df)
-    if df.empty:
-        print(f"  SKIP {variable}: nenhum registro após filtros (START_YEAR={START_YEAR}, MIN_STATIONS={MIN_STATIONS}).")
-        return
-    data_start = str(df["time"].min().date())
-    print(f"  {n_raw:,} → {len(df):,} registros  (a partir de {data_start}, ≥{MIN_STATIONS} vizinhos)")
+    df = df[df["time"].dt.year >= START_YEAR].reset_index(drop=True)
+    _step(f"ano >= {START_YEAR}: {n_raw:,} → {len(df):,} registros")
 
-    # descarta slots 16-20 (além do mínimo garantido)
+    # 3. drop slots 16-20
     df = df.drop(columns=[c for c in DROP_COLS if c in df.columns])
-    print(f"  Colunas após drop slots 16-20: {df.shape[1]}")
+    _step(f"colunas após drop slots 16-20: {df.shape[1]}")
 
-    # 2. split temporal
+    # 4. remove linhas com NaN em n01..n15 (após drop — confirma que k=15 está intacto)
+    n_before = len(df)
+    df = df.dropna(subset=NEIGHBOR_COLS).reset_index(drop=True)
+    _step(f"dropna n01..n15: {n_before:,} → {len(df):,} ({n_before - len(df):,} removidos)")
+
+    if df.empty:
+        print(f"  SKIP {variable}: nenhum registro após filtros.")
+        return
+
+    # 5. fit scaler no dataset completo
+    _step(f"ajustando MinMax scaler (clip={CLIP_PCT}%)...")
+    cols   = [c for c in df.columns if c not in SKIP_COLS]
+    scaler = fit_scaler(df, cols)
+
+    MODELS_DIR.mkdir(exist_ok=True)
+    scaler_path = MODELS_DIR / f"scaler_{variable}.scaler"
+    joblib.dump({"scaler": scaler, "cols": cols, "clip_pct": CLIP_PCT}, scaler_path)
+    _step(f"scaler salvo → {scaler_path.name}  ({len(cols)} colunas)")
+
+    # 6. aplica scaler no df todo
+    _step(f"aplicando scaler ({len(df):,} linhas × {len(cols)} colunas)...")
+    df = apply_scaler(df, scaler, cols)
+
+    # 7. split temporal (ordena dentro do split_by_time)
+    _step("split treino/teste...")
     train_df, test_df, cutoff = split_by_time(df)
-    print(f"  train até {cutoff}  |  {len(train_df):,} treino  |  {len(test_df):,} teste")
+    del df
+    _step(f"treino até {cutoff} | {len(train_df):,} treino | {len(test_df):,} teste")
 
-    # 3. fit scaler no treino
-    cols  = [c for c in df.columns if c not in SKIP_COLS]
-    stats = fit_scaler(train_df, cols)
-
-    scaler_out = {
-        "_meta": {
-            "variable":    variable,
-            "start_year":  START_YEAR,
-            "data_start":  data_start,
-            "train_cutoff": cutoff,
-            "n_train":     len(train_df),
-            "n_test":      len(test_df),
-            "train_ratio": TRAIN_RATIO,
-            "min_stations": MIN_STATIONS,
-        },
-        **stats,
-    }
-    scaler_path = MODELS_DIR / f"1.6_scaler_{variable}.json"
-    with open(scaler_path, "w") as f:
-        json.dump(scaler_out, f, indent=2)
-    print(f"  → {scaler_path.name}")
-
-    # 4. transform e salva
+    # 8. salva
     for split_df, split_name in [(train_df, "train"), (test_df, "test")]:
-        scaled    = apply_scaler(split_df, stats, gpu_id=gpu_id)
-        out_path  = DATA_DIR / f"{variable}_{split_name}_scaled.parquet"
-        scaled.to_parquet(out_path, index=False, compression="snappy")
-        size_mb   = out_path.stat().st_size / 1_048_576
-        print(f"  → {out_path.name}   {size_mb:.0f} MB")
+        out_path = DATA_DIR / f"{variable}_{split_name}_scaled.parquet"
+        _step(f"gravando {out_path.name}...")
+        split_df.to_parquet(out_path, index=False, compression="snappy", engine="pyarrow")
+        size_mb = out_path.stat().st_size / 1_048_576
+        _step(f"→ {out_path.name}   {size_mb:.0f} MB")
+        del split_df
 
-    elapsed = time.time() - t0
-    print(f"  Concluído em {elapsed:.0f}s")
-
-
-# ── worker para multiprocessing ───────────────────────────────────────────────
-
-def _worker(args: tuple) -> None:
-    variable, gpu_id = args
-    process_variable(variable, gpu_id)
+    _step(f"CONCLUÍDO em {time.time() - t0:.0f}s total")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    print(f"=== 1.6 Split + Scale (train={TRAIN_RATIO:.0%} / test={1-TRAIN_RATIO:.0%}) ===")
-    if HAS_CUPY:
-        print(f"  GPU: CuPy disponível — {N_GPUS} GPUs | chunk={CHUNK_SIZE:,} linhas")
-    else:
-        print("  CPU: CuPy não encontrado — rodando em numpy")
-    print()
-
-    MODELS_DIR.mkdir(exist_ok=True)
+    print(f"=== 1.6 MinMax Scale + Split (train={TRAIN_RATIO:.0%} / test={1-TRAIN_RATIO:.0%}) ===")
+    print(f"  clip_pct={CLIP_PCT}%  |  start_year={START_YEAR}  |  K={K} vizinhos")
+    print(f"  sin/cos não escalados: {len(SIN_COS_COLS)} colunas\n")
 
     variables = VARIABLES_TO_RUN if VARIABLES_TO_RUN is not None else VARIABLES
-    tasks     = [(v, i % N_GPUS) for i, v in enumerate(variables)]
-
-    if HAS_CUPY and len(variables) > 1:
-        ctx = mp.get_context("spawn")
-        with ctx.Pool(min(len(variables), N_GPUS)) as pool:
-            pool.map(_worker, tasks)
-    else:
-        for variable, gpu_id in tasks:
-            process_variable(variable, gpu_id)
+    for variable in variables:
+        process_variable(variable)
 
     print("\nConcluído.")
 
