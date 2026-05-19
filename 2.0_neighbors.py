@@ -1,27 +1,30 @@
 """
-2.0 — Baseline metrics: vizinho mais próximo (n01) vs measurement.
+2.0 — Neighbors: baseline vizinho mais próximo (n01 vs measurement).
 
 Avalia o vizinho mais próximo disponível (n01) como estimador da
-medição da estação-alvo. Serve como baseline mínimo de gap-filling —
+medição da estação-alvo no conjunto de TESTE. Serve como baseline mínimo —
 qualquer modelo treinado deve superar essas métricas.
 
-Métricas calculadas por variável:
-    n        — número de registros com n01 disponível
-    n_nan    — registros sem nenhum vizinho disponível
-    MAE      — Erro absoluto médio (mesma unidade da variável)
+Métricas calculadas no espaço escalado (µ=0, σ=1) para comparação direta
+com os modelos treinados (3.0+).
+
+Métricas por variável:
+    n        — registros de teste com n01 disponível
+    n_nan    — registros de teste sem nenhum vizinho
+    MAE      — Erro absoluto médio
     RMSE     — Raiz do erro quadrático médio
     R²       — Coeficiente de determinação
-    Bias     — Erro sistemático — positivo: n01 subestima o alvo
+    Bias     — Erro sistemático (positivo: n01 subestima o alvo)
     r        — Correlação de Pearson
 
 Input:
-    data/{variable}_neighbors.parquet
+    data/{variable}_test_scaled.parquet
 
 Output:
-    results/2.0_baseline_metrics.csv
+    results/2.0_neighbors/metrics.csv
 
 Usage:
-    python 2.0_baseline_metrics.py
+    python 2.0_neighbors.py
 """
 
 from pathlib import Path
@@ -30,7 +33,7 @@ import numpy as np
 import pandas as pd
 
 DATA_DIR    = Path(__file__).parent / "data"
-RESULTS_DIR = Path(__file__).parent / "results"
+RESULTS_DIR = Path(__file__).parent / "results" / "2.0_neighbors"
 
 VARIABLES = [
     "temperature",
@@ -59,19 +62,18 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
 
 
 def main() -> None:
-    print("=== 2.0 Baseline Metrics (n01 vs measurement) ===\n")
-    RESULTS_DIR.mkdir(exist_ok=True)
+    print("=== 2.0 Neighbors — baseline (n01 vs measurement, teste) ===\n")
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     rows = []
     for variable in VARIABLES:
-        path = DATA_DIR / f"{variable}_neighbors.parquet"
+        path = DATA_DIR / f"{variable}_test_scaled.parquet"
         if not path.exists():
-            print(f"  SKIP {variable}: {path.name} não encontrado — rode 1.5 primeiro.")
+            print(f"  SKIP {variable}: {path.name} não encontrado — rode 1.6 primeiro.")
             continue
 
         df = pd.read_parquet(path, columns=["measurement", "n01"])
 
-        n_total = len(df)
         n_nan   = int(df["n01"].isna().sum())
         df      = df.dropna(subset=["n01"])
         n_valid = len(df)
@@ -97,13 +99,8 @@ def main() -> None:
         print("Nenhum arquivo encontrado.")
         return
 
-    result = (
-        pd.DataFrame(rows)
-        .set_index("variable")
-        .round(4)
-    )
-
-    out = RESULTS_DIR / "2.0_baseline_metrics.csv"
+    result = pd.DataFrame(rows).set_index("variable").round(4)
+    out    = RESULTS_DIR / "metrics.csv"
     result.to_csv(out)
     print(f"\n→ {out}")
 

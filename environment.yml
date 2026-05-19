@@ -20,7 +20,12 @@ dependencies:
   - pytorch::pytorch
   - pytorch::torchvision
   - pytorch::torchaudio
-  - cpuonly             # remova esta linha se tiver GPU
+  - pytorch::pytorch-cuda=12.1  # ajuste para a versão CUDA da máquina (nvidia-smi)
+
+  # GPU — aceleração numpy (CuPy)
+  # Instale após criar o ambiente: pip install cupy-cuda12x
+  # Para CUDA 11.x: pip install cupy-cuda11x
+  # Verifique a versão: nvidia-smi | grep "CUDA Version"
 
   # Dados climáticos / geoespaciais
   - xarray              # dados multidimensionais (NetCDF, GRIB)

@@ -75,6 +75,30 @@ Depois abra `main.ipynb` no navegador.
 
 ---
 
+## Aceleração GPU (opcional)
+
+Os scripts 1.5 e 3.0 detectam automaticamente o CuPy e usam GPU quando disponível, caindo back para numpy/CPU caso contrário.
+
+### Configuração para 5× NVIDIA RTX A4000 (Linux)
+
+**1. Verificar versão do CUDA:**
+```bash
+nvidia-smi | grep "CUDA Version"
+```
+
+**2. Instalar CuPy compatível:**
+```bash
+pip install cupy-cuda12x   # CUDA 12.x
+# ou
+pip install cupy-cuda11x   # CUDA 11.x
+```
+
+**3. Ajustar PyTorch no `environment.yml`** — substitua `pytorch-cuda=12.1` pela versão do seu driver antes de criar o ambiente.
+
+Sem CuPy instalado, os scripts rodam normalmente em CPU com numpy.
+
+---
+
 ## Pipeline de Dados
 
 Com o ambiente ativado (`conda activate climate-engine`), execute os scripts na ordem abaixo.
@@ -154,7 +178,34 @@ Arquivos gerados em `data/`:
 | `global_radiation_neighbors.parquet` | idem |
 | `pressure_neighbors.parquet` | idem |
 
+**Aceleração GPU:** com CuPy instalado, a matriz pivot (~570 MB para temperatura) é carregada na VRAM uma única vez por variável. As operações de seleção de vizinhos (`cumsum`, `where`, scatter) rodam inteiramente na GPU. Com 5 GPUs, as 5 variáveis são processadas em paralelo via `multiprocessing` — uma GPU por variável.
+
 > Requer os Passos 1.2 e 1.4 executados antes.
+
+---
+
+### 1.6 — Normalização das features (StandardScaler)
+
+Aplica StandardScaler (µ=0, σ=1) em todas as colunas numéricas do arquivo `_neighbors.parquet` de cada variável. NaN permanece NaN no output — a substituição por zero ocorre no momento do treino.
+
+```bash
+python 1.6_scale_features.py
+```
+
+O scaler é ajustado ignorando NaN, garantindo que as estatísticas reflitam apenas valores reais medidos.
+
+Arquivos gerados:
+
+| Destino | Arquivo | Descrição |
+|---|---|---|
+| `data/` | `{variable}_neighbors_scaled.parquet` | Features escaladas, mesma estrutura do _neighbors |
+| `models/` | `1.6_scaler_{variable}.json` | `{"coluna": {"mean": ..., "std": ...}}` — usado para inverse transform |
+
+Para inverter a transformação: `x_original = x_scaled * std + mean`.
+
+**Aceleração GPU:** transformação aplicada em chunks de 5M linhas na GPU. Com 5 GPUs, as 5 variáveis processam em paralelo.
+
+> Requer o Passo 1.5 executado antes.
 
 ---
 
@@ -163,7 +214,7 @@ Arquivos gerados em `data/`:
 Avalia o vizinho mais próximo (n01) como estimador da medição real de cada estação. Serve como baseline mínimo — qualquer modelo treinado deve superar essas métricas.
 
 ```bash
-python 2.0_baseline_metrics.py
+python 2.0_neighbors.py
 ```
 
 Métricas calculadas por variável: MAE, RMSE, R², Bias, r (Pearson).
@@ -187,6 +238,8 @@ python 3.0_linear_regression.py
 ```
 
 Features (104 colunas): medições dos vizinhos (n01..n20), distâncias (d01..d20), delta de altitude (a01..a20), azimute sin/cos (b01..b20), encodings temporais cíclicos (hour, doy).
+
+**Aceleração GPU:** X é grande demais para caber inteiro na VRAM (70M × 105 × 8 bytes ≈ 58 GB). A equação normal é resolvida acumulando XᵀX e Xᵀy em chunks de 2M linhas (~1.7 GB/chunk), depois o sistema 105×105 é resolvido na GPU. A predição também é feita em chunks. Com 5 GPUs, as 5 variáveis rodam em paralelo — uma GPU por variável.
 
 Arquivos gerados em `results/`:
 
