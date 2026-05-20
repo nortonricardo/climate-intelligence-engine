@@ -1,6 +1,5 @@
 name: climate-engine
 channels:
-  - pytorch
   - conda-forge
   - defaults
 dependencies:
@@ -13,26 +12,16 @@ dependencies:
   - scipy
 
   # Machine Learning
-  - scikit-learn        # regressão linear, KNN, random forest
-  - xgboost             # gradient boosting (útil para dados climáticos)
+  - scikit-learn
+  - xgboost
   - lightgbm
-
-  # Deep Learning (redes densas + transformers)
-  - pytorch::pytorch
-  - pytorch::torchvision
-  - pytorch::torchaudio
-  - pytorch::pytorch-cuda=12.6  # driver 13.0 é retrocompatível com builds CUDA 12.x
-
-  # GPU — aceleração numpy (CuPy)
-  # Instale após criar o ambiente: pip install cupy-cuda12x
-  # Para CUDA 11.x: pip install cupy-cuda11x
-  # Verifique a versão: nvidia-smi | grep "CUDA Version"
+  - joblib
 
   # Dados climáticos / geoespaciais
-  - xarray              # dados multidimensionais (NetCDF, GRIB)
+  - xarray
   - netcdf4
   - cfgrib
-  - cartopy             # mapas e projeções
+  - cartopy
   - geopandas
   - rioxarray
 
@@ -45,14 +34,17 @@ dependencies:
   - jupyter
   - ipykernel
   - tqdm
-
-  # Utilitários
   - pip
+
+  # Pacotes pip — PyTorch (CUDA 12.6, compatível com driver 13.0) + extras
   - pip:
-    - transformers       # HuggingFace Transformers (BERT, TimeSeries, etc.)
+    - torch --index-url https://download.pytorch.org/whl/cu126
+    - torchvision --index-url https://download.pytorch.org/whl/cu126
+    - torchaudio --index-url https://download.pytorch.org/whl/cu126
+    - transformers
     - datasets
     - evaluate
-    - mlflow             # tracking de experimentos
-    - hydra-core         # gestão de configs
-    - gdown              # download de arquivos do Google Drive
-    - weasyprint         # exportação de notebooks para PDF
+    - mlflow
+    - hydra-core
+    - gdown
+    - weasyprint
