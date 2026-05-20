@@ -323,7 +323,7 @@ def train_variable(variable: str, device_str: str, cfg: Config) -> dict | None:
 
     # ── avalia no teste com o melhor modelo ───────────────────────────────────
     _step("avaliando no teste com o melhor modelo...")
-    model.load_state_dict(
+    getattr(model, "_orig_mod", model).load_state_dict(
         torch.load(ckpt_path, map_location=device, weights_only=True)
     )
     model.eval()
