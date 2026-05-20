@@ -61,6 +61,9 @@ from utils import (
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision("high")   # TF32 nos Tensor Cores da Ampere
 
+import torch._inductor.config as _ind_cfg
+_ind_cfg.max_autotune_gemm = False           # A4000 não tem SMs suficientes para max_autotune_gemm
+
 # ── hiperparâmetros fixos ─────────────────────────────────────────────────────
 
 BATCH_SIZE  = 131_072
@@ -212,7 +215,7 @@ def train_variable(variable: str, device_str: str, cfg: Config) -> dict | None:
     # ── modelo ────────────────────────────────────────────────────────────────
     model = torch.compile(
         DenseNet(N_FEATURES, cfg.hidden_dims, cfg.dropout).to(device),
-        mode="reduce-overhead",
+        mode="default",
     )
     criterion  = nn.HuberLoss(delta=HUBER_DELTA)
     optimizer  = torch.optim.AdamW(
