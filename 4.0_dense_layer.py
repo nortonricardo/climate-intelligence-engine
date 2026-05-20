@@ -176,9 +176,7 @@ def train_variable(variable: str, device_str: str) -> dict | None:
         batch_size=BATCH_SIZE,
         shuffle=True,
         pin_memory=(device.type == "cuda"),
-        num_workers=6,
-        prefetch_factor=4,
-        persistent_workers=True,
+        num_workers=0,
         drop_last=True,
     )
 
