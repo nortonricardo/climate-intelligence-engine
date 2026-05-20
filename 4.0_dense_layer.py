@@ -299,7 +299,8 @@ def train_variable(variable: str, device_str: str, cfg: Config) -> dict | None:
         if val_mae < best_val_mae:
             best_val_mae = val_mae
             no_improve   = 0
-            torch.save(model.state_dict(), ckpt_path)
+            state = getattr(model, "_orig_mod", model).state_dict()
+            torch.save(state, ckpt_path)
         else:
             no_improve += 1
 
