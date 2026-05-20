@@ -149,6 +149,8 @@ def train_variable(variable: str, device_str: str) -> dict | None:
         print(f"  [{variable:<18s} {time.time() - t0:6.1f}s] {msg}", flush=True)
 
     t0 = time.time()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
     print(f"\n[{variable}] → {device_str}", flush=True)
 
     # ── carrega dados ────────────────────────────────────────────────────────
@@ -215,7 +217,7 @@ def train_variable(variable: str, device_str: str) -> dict | None:
         model.train()
         epoch_loss = 0.0
         for X_b, y_b in train_loader:
-            X_b, y_b = X_b.to(device), y_b.to(device)
+            X_b, y_b = X_b.to(device, non_blocking=True), y_b.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=use_amp):
                 pred = model(X_b)
@@ -228,8 +230,11 @@ def train_variable(variable: str, device_str: str) -> dict | None:
 
         # validação
         model.eval()
+        val_chunks: list[np.ndarray] = []
         with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
-            val_pred = model(X_val_dev).cpu().numpy()
+            for vs in range(0, len(X_val_dev), BATCH_SIZE * 4):
+                val_chunks.append(model(X_val_dev[vs : vs + BATCH_SIZE * 4]).cpu().numpy())
+        val_pred = np.concatenate(val_chunks)
         val_mae  = float(np.mean(np.abs(val_pred - y_val_np)))
         val_rmse = float(np.sqrt(np.mean((val_pred - y_val_np) ** 2)))
 
