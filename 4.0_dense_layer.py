@@ -6,10 +6,10 @@ Arquitetura:
     Camadas: 256 → 512 → 256 → 128 → 64 → 1
 
 Treinamento:
-    Otimizador  : AdamW (lr=1e-3, weight_decay=1e-4)
+    Otimizador  : AdamW (lr=2e-3, weight_decay=1e-4)
     Loss        : Huber (delta=0.05, robusto a outliers no espaço [0,1])
     Scheduler   : ReduceLROnPlateau (fator=0.5, patience=5)
-    Early stop  : patience=20 épocas sem melhora no MAE de validação
+    Early stop  : patience=25 épocas sem melhora no MAE de validação
     Val split   : últimos 10% do treino (temporal — sem leakage)
     Precisão    : float32 + AMP (mixed precision) quando GPU disponível
 
@@ -45,7 +45,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from utils import (
-    DATA_DIR,
     MODELS_DIR,
     RESULTS_DIR as _BASE_RESULTS,
     VARIABLES,
@@ -56,12 +55,14 @@ from utils import (
     save_metrics,
 )
 
+torch.backends.cudnn.benchmark = True
+
 # ── hiperparâmetros ───────────────────────────────────────────────────────────
 
 HIDDEN_DIMS  = [256, 512, 256, 128, 64]
 DROPOUT      = 0.2
-BATCH_SIZE   = 8_192
-LR           = 1e-3
+BATCH_SIZE   = 65_536
+LR           = 2e-3
 WEIGHT_DECAY = 1e-4
 MAX_EPOCHS   = 750
 PATIENCE     = 25          # épocas sem melhora → early stop
@@ -78,7 +79,7 @@ N_FEATURES       = len(FEATURE_COLS)   # 79
 
 def available_devices() -> list[str]:
     if torch.cuda.is_available():
-        devs = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+        devs = [f"cuda:{i}" for i in range(min(2, torch.cuda.device_count()))]
         print(f"  GPUs detectadas: {len(devs)}")
         for d in devs:
             name = torch.cuda.get_device_name(d)
@@ -145,7 +146,7 @@ def train_variable(variable: str, device_str: str) -> dict | None:
     use_amp = device.type == "cuda"
 
     def _step(msg: str) -> None:
-        print(f"  [{time.time() - t0:6.1f}s] {msg}", flush=True)
+        print(f"  [{variable:<18s} {time.time() - t0:6.1f}s] {msg}", flush=True)
 
     t0 = time.time()
     print(f"\n[{variable}] → {device_str}", flush=True)
@@ -175,11 +176,14 @@ def train_variable(variable: str, device_str: str) -> dict | None:
         batch_size=BATCH_SIZE,
         shuffle=True,
         pin_memory=(device.type == "cuda"),
-        num_workers=0,
+        num_workers=6,
+        prefetch_factor=4,
+        persistent_workers=True,
+        drop_last=True,
     )
 
     # ── modelo ────────────────────────────────────────────────────────────────
-    model     = DenseNet(N_FEATURES, HIDDEN_DIMS, DROPOUT).to(device)
+    model     = torch.compile(DenseNet(N_FEATURES, HIDDEN_DIMS, DROPOUT).to(device))
     criterion = nn.HuberLoss(delta=HUBER_DELTA)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -188,7 +192,10 @@ def train_variable(variable: str, device_str: str) -> dict | None:
     scaler_amp = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    _step(f"modelo: {n_params:,} parâmetros")
+    if use_amp:
+        mem_alloc = torch.cuda.memory_allocated(device) / 1024**3
+        mem_total = torch.cuda.get_device_properties(device).total_memory / 1024**3
+        _step(f"modelo: {n_params:,} params  |  GPU mem: {mem_alloc:.2f}/{mem_total:.1f} GB")
 
     # ── loop de épocas ────────────────────────────────────────────────────────
     var_dir    = RESULTS_DIR / variable
@@ -199,11 +206,13 @@ def train_variable(variable: str, device_str: str) -> dict | None:
     best_val_mae  = float("inf")
     no_improve    = 0
     log_rows: list[dict] = []
+    epoch_times: list[float] = []
 
     X_val_dev = X_val.to(device)
     y_val_np  = y_val.numpy()
 
     for epoch in range(1, MAX_EPOCHS + 1):
+        epoch_start = time.time()
         # treino
         model.train()
         epoch_loss = 0.0
@@ -229,6 +238,13 @@ def train_variable(variable: str, device_str: str) -> dict | None:
         scheduler.step(val_mae)
         current_lr = optimizer.param_groups[0]["lr"]
 
+        epoch_dt = time.time() - epoch_start
+        epoch_times.append(epoch_dt)
+        avg_dt  = sum(epoch_times[-10:]) / len(epoch_times[-10:])
+        eta_s   = avg_dt * (MAX_EPOCHS - epoch)
+        eta_str = (f"{int(eta_s // 3600)}h{int(eta_s % 3600 // 60):02d}m"
+                   if eta_s >= 3600 else f"{int(eta_s // 60)}m{int(eta_s % 60):02d}s")
+
         log_rows.append({
             "epoch": epoch, "train_loss": round(train_loss, 6),
             "val_mae": round(val_mae, 6), "val_rmse": round(val_rmse, 6),
@@ -245,9 +261,9 @@ def train_variable(variable: str, device_str: str) -> dict | None:
 
         if epoch % 10 == 0 or no_improve == 0:
             _step(
-                f"epoch {epoch:4d}  loss={train_loss:.5f}"
+                f"epoch {epoch:4d}/{MAX_EPOCHS}  loss={train_loss:.5f}"
                 f"  val_mae={val_mae:.5f}  best={best_val_mae:.5f}"
-                f"  lr={current_lr:.2e}"
+                f"  lr={current_lr:.2e}  Δt={epoch_dt:.1f}s  eta={eta_str}"
                 + ("  ✓" if no_improve == 0 else f"  ({no_improve}/{PATIENCE})")
             )
 
@@ -260,7 +276,7 @@ def train_variable(variable: str, device_str: str) -> dict | None:
 
     # ── avalia no teste com o melhor modelo ───────────────────────────────────
     _step("avaliando no teste com o melhor modelo...")
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
     model.eval()
 
     X_test, y_test = df_to_tensors(test_df); del test_df
@@ -297,6 +313,7 @@ def train_variable(variable: str, device_str: str) -> dict | None:
 
 def _worker(args: tuple) -> dict | None:
     variable, device_str = args
+    torch.set_num_threads(8)
     return train_variable(variable, device_str)
 
 
