@@ -1,5 +1,6 @@
 name: climate-engine
 channels:
+  - pytorch
   - conda-forge
   - defaults
 dependencies:
@@ -20,7 +21,7 @@ dependencies:
   - pytorch::pytorch
   - pytorch::torchvision
   - pytorch::torchaudio
-  - pytorch::pytorch-cuda=12.1  # ajuste para a versão CUDA da máquina (nvidia-smi)
+  - pytorch::pytorch-cuda=12.6  # driver 13.0 é retrocompatível com builds CUDA 12.x
 
   # GPU — aceleração numpy (CuPy)
   # Instale após criar o ambiente: pip install cupy-cuda12x
