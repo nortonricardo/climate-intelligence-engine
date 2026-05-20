@@ -1,0 +1,2 @@
+n_train,n_test,best_alpha,best_val_mae,MAE,RMSE,R²,Bias,r
+51131442,15683594,0.001,0.0375,0.0334,0.1109,0.2001,0.0002,0.448
