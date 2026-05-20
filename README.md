@@ -1,113 +1,58 @@
 # Climate-Intelligence-Engine
-Engine analítica para detecção de inconsistências, completamento de dados e otimização de precisão climática.
+
+Engine analítica para detecção de inconsistências, completamento de dados e otimização de precisão climática em estações INMET brasileiras.
 
 ---
 
-## Instalação e Execução
+## Instalação
 
-### Pré-requisitos
-
-- macOS com [Homebrew](https://brew.sh) instalado
-- Git
-
----
-
-### Passo 1 — Instalar o Miniconda
+### macOS
 
 ```bash
 brew install --cask miniconda
-```
-
-Após a instalação, inicialize o conda no seu shell:
-
-```bash
-conda init zsh   # ou conda init bash, dependendo do seu shell
-```
-
-Reinicie o terminal para as mudanças entrarem em vigor.
-
----
-
-### Passo 2 — Clonar o repositório
-
-```bash
-git clone <url-do-repositorio>
-cd Climate-Intelligence-Engine
-```
-
----
-
-### Passo 3 — Criar o ambiente conda
-
-```bash
+conda init zsh   # ou bash
+# reinicie o terminal
 conda env create -f environment.yml
-```
-
----
-
-### Passo 4 — Ativar o ambiente
-
-```bash
 conda activate climate-engine
-```
-
----
-
-### Passo 5 — Registrar o kernel no Jupyter
-
-```bash
 python -m ipykernel install --user --name climate-engine --display-name "Climate Engine"
 ```
 
----
-
-### Passo 6 — Executar o notebook
-
-**Via VS Code** — abra `main.ipynb` e selecione o kernel **Climate Engine** no canto superior direito.
-
-**Via Jupyter Lab** — execute no terminal:
+### Linux (servidor com GPU NVIDIA)
 
 ```bash
-jupyter lab
+# instalar Miniconda
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+conda init bash && source ~/.bashrc
+
+conda env create -f environment.yml
+conda activate climate-engine
+python -m ipykernel install --user --name climate-engine --display-name "Climate Engine"
 ```
 
-Depois abra `main.ipynb` no navegador.
-
----
-
-## Aceleração GPU (opcional)
-
-Os scripts 1.5 e 3.0 detectam automaticamente o CuPy e usam GPU quando disponível, caindo back para numpy/CPU caso contrário.
-
-### Configuração para 5× NVIDIA RTX A4000 (Linux)
-
-**1. Verificar versão do CUDA:**
-```bash
-nvidia-smi | grep "CUDA Version"
-```
-
-**2. Instalar CuPy compatível:**
-```bash
-pip install cupy-cuda12x   # CUDA 12.x
-# ou
-pip install cupy-cuda11x   # CUDA 11.x
-```
-
-**3. Ajustar PyTorch no `environment.yml`** — substitua `pytorch-cuda=12.1` pela versão do seu driver antes de criar o ambiente.
-
-Sem CuPy instalado, os scripts rodam normalmente em CPU com numpy.
+> O `environment.yml` instala PyTorch com suporte a CUDA 12.6 via pip wheels. Compatible com drivers NVIDIA a partir do 525 (CUDA 12.x).
 
 ---
 
-## Pipeline de Dados
+## Execução via Notebook
 
-Com o ambiente ativado (`conda activate climate-engine`), execute os scripts na ordem abaixo.
+Abra `main.ipynb` no VS Code ou Jupyter Lab e selecione o kernel **Climate Engine**. O notebook orquestra todo o pipeline chamando cada script em sequência.
+
+```bash
+jupyter lab   # alternativa ao VS Code
+```
+
+---
+
+## Pipeline
+
+Execute os scripts **na ordem abaixo** com o ambiente ativado.
 
 ---
 
 ### 1.1 — Download dos dados
 
-Baixa os arquivos `stations.parquet` e `weather_measurements.parquet` do Google Drive para a pasta `data/`.
+Baixa `stations.parquet` e `weather_measurements.parquet` do Google Drive para `data/`.
 
 ```bash
 python 1.1_download_data.py
@@ -115,38 +60,32 @@ python 1.1_download_data.py
 
 ---
 
-### 1.2 — Cálculo de distâncias entre estações
+### 1.2 — Distâncias entre estações
 
-Gera o arquivo `data/station_distances.parquet` com as distâncias par-a-par entre todas as estações meteorológicas.
+Gera `data/station_distances.parquet` com distâncias geodésicas (Haversine), delta de altitude e azimute par-a-par entre todas as estações.
 
 ```bash
 python 1.2_compute_station_distances.py
 ```
 
-Colunas geradas:
-
 | Coluna | Descrição |
 |---|---|
-| `from_code` | Código da estação de origem |
-| `to_code` | Código da estação de destino |
+| `from_code` / `to_code` | Códigos das estações |
 | `distance_km` | Distância geodésica (Haversine) em km |
 | `delta_altitude_m` | Diferença de altitude em metros |
-| `effective_distance_km` | Distância 3D ponderada (Haversine + altitude) |
+| `azimuth_deg` | Azimute em graus (0–360) |
 
-> Requer que o Passo 1.1 tenha sido executado antes.
+> Requer 1.1.
 
 ---
 
-### 1.4 — Limpeza e separação das variáveis
+### 1.4 — Limpeza e separação por variável
 
-Lê `weather_measurements.parquet` e gera um parquet por variável com a estrutura `code / time / measurement`, removendo todos os NaN.
-Radiação solar negativa é substituída por 0 (ausência de luz).
+Lê `weather_measurements.parquet`, remove NaN, substitui radiação negativa por 0 e gera um parquet por variável com schema `code / time / measurement`.
 
 ```bash
 python 1.4_clean_data.py
 ```
-
-Arquivos gerados em `data/`:
 
 | Arquivo | Variável |
 |---|---|
@@ -156,111 +95,156 @@ Arquivos gerados em `data/`:
 | `global_radiation.parquet` | Radiação solar (KJ/m²) |
 | `pressure.parquet` | Pressão atmosférica (hPa) |
 
-> Requer que o Passo 1.1 tenha sido executado antes.
+> Requer 1.1.
 
 ---
 
-### 1.5 — Enriquecimento com vizinhos mais próximos
+### 1.5 — Enriquecimento com vizinhos
 
-Para cada variável gerada pelo 1.4, adiciona as medições das 20 estações mais próximas disponíveis no mesmo timestamp.
+Para cada variável, adiciona as medições das 20 estações mais próximas disponíveis no mesmo timestamp.
 
 ```bash
 python 1.5_build_neighbors.py
 ```
 
-Arquivos gerados em `data/`:
+Gera `data/{variable}_neighbors.parquet` com colunas `code, time, measurement, n01…n20, d01…d20, a01…a20, azimuth01…azimuth20`.
 
-| Arquivo | Schema |
-|---|---|
-| `temperature_neighbors.parquet` | code, time, measurement, n01…n20 |
-| `humidity_neighbors.parquet` | idem |
-| `rainfall_neighbors.parquet` | idem |
-| `global_radiation_neighbors.parquet` | idem |
-| `pressure_neighbors.parquet` | idem |
-
-**Aceleração GPU:** com CuPy instalado, a matriz pivot (~570 MB para temperatura) é carregada na VRAM uma única vez por variável. As operações de seleção de vizinhos (`cumsum`, `where`, scatter) rodam inteiramente na GPU. Com 5 GPUs, as 5 variáveis são processadas em paralelo via `multiprocessing` — uma GPU por variável.
-
-> Requer os Passos 1.2 e 1.4 executados antes.
+> Requer 1.2 e 1.4.
 
 ---
 
-### 1.6 — Normalização das features (StandardScaler)
+### 1.6 — Scaling de features (MinMaxScaler [0,1])
 
-Aplica StandardScaler (µ=0, σ=1) em todas as colunas numéricas do arquivo `_neighbors.parquet` de cada variável. NaN permanece NaN no output — a substituição por zero ocorre no momento do treino.
+Aplica MinMaxScaler com clipping em percentis [p1, p99] para robustez a outliers. Features sin/cos (azimute, hora, dia do ano) são matematicamente limitadas a [−1, 1] e não precisam de scaling.
+
+Usa dados a partir de **2002** (primeiro ano com ≥ 15 vizinhos disponíveis para todas as variáveis). Split temporal: 80% treino / 20% teste, ordenados por timestamp.
 
 ```bash
 python 1.6_scale_features.py
 ```
 
-O scaler é ajustado ignorando NaN, garantindo que as estatísticas reflitam apenas valores reais medidos.
-
-Arquivos gerados:
-
 | Destino | Arquivo | Descrição |
 |---|---|---|
-| `data/` | `{variable}_neighbors_scaled.parquet` | Features escaladas, mesma estrutura do _neighbors |
-| `models/` | `1.6_scaler_{variable}.json` | `{"coluna": {"mean": ..., "std": ...}}` — usado para inverse transform |
+| `data/` | `{variable}_train_scaled.parquet` | Features escaladas — treino |
+| `data/` | `{variable}_test_scaled.parquet` | Features escaladas — teste |
+| `models/` | `scaler_{variable}.scaler` | MinMaxScaler serializado (joblib) |
 
-Para inverter a transformação: `x_original = x_scaled * std + mean`.
+Features (79 colunas para k=15 vizinhos):
 
-**Aceleração GPU:** transformação aplicada em chunks de 5M linhas na GPU. Com 5 GPUs, as 5 variáveis processam em paralelo.
+| Grupo | Colunas | Scaling |
+|---|---|---|
+| Medição vizinhos | `n01..n15` | MinMax [0,1] |
+| Distância (km) | `d01..d15` | MinMax [0,1] |
+| Delta altitude (m) | `a01..a15` | MinMax [0,1] |
+| Azimute | `b01..b15_sin`, `b01..b15_cos` | Nenhum (já em [−1,1]) |
+| Temporais cíclicos | `hour_sin/cos`, `doy_sin/cos` | Nenhum (já em [−1,1]) |
 
-> Requer o Passo 1.5 executado antes.
+> Requer 1.5.
 
 ---
 
-### 2.0 — Métricas de baseline (vizinho mais próximo)
+### 2.0 — Baseline: vizinho mais próximo
 
-Avalia o vizinho mais próximo (n01) como estimador da medição real de cada estação. Serve como baseline mínimo — qualquer modelo treinado deve superar essas métricas.
+Avalia `n01` (vizinho mais próximo) como estimador direto da medição da estação-alvo no conjunto de **teste**. É o baseline mínimo — qualquer modelo treinado deve superá-lo.
 
 ```bash
 python 2.0_neighbors.py
 ```
 
-Métricas calculadas por variável: MAE, RMSE, R², Bias, r (Pearson).
+Métricas: MAE, RMSE, R², Bias, r (Pearson) — todas no espaço MinMax [0,1].
 
-Arquivo gerado em `results/`:
+Gera `results/2.0_neighbors/metrics.csv`.
 
-| Arquivo | Descrição |
-|---|---|
-| `2.0_baseline_metrics.csv` | Métricas por variável (n01 vs measurement) |
-
-> Requer o Passo 1.5 executado antes.
+> Requer 1.6.
 
 ---
 
-### 3.0 — Regressão Linear
+### 3.0 — Ridge Regression
 
-Treina um modelo OLS (β = (XᵀX)⁻¹Xᵀy) por variável usando as features dos vizinhos. Antes do treino, valida a partir de qual data existem ≥ 15 estações com dado disponível (`MIN_STATIONS`).
+Treina Ridge Regression por variável. Ridge (OLS + λI) resolve a multicolinearidade de `n01..n15` (temperaturas de estações vizinhas altamente correlacionadas) estabilizando XᵀX sem sacrificar precisão.
+
+XᵀX (80×80) é computado **uma única vez** sobre todo o treino em memória. A busca do melhor λ é negligível — cada candidato é apenas um `solve` em 80×80.
 
 ```bash
 python 3.0_linear_regression.py
 ```
 
-Features (104 colunas): medições dos vizinhos (n01..n20), distâncias (d01..d20), delta de altitude (a01..a20), azimute sin/cos (b01..b20), encodings temporais cíclicos (hour, doy).
-
-**Aceleração GPU:** X é grande demais para caber inteiro na VRAM (70M × 105 × 8 bytes ≈ 58 GB). A equação normal é resolvida acumulando XᵀX e Xᵀy em chunks de 2M linhas (~1.7 GB/chunk), depois o sistema 105×105 é resolvido na GPU. A predição também é feita em chunks. Com 5 GPUs, as 5 variáveis rodam em paralelo — uma GPU por variável.
-
-Arquivos gerados em `results/`:
-
-| Arquivo | Descrição |
+| Parâmetro | Valor |
 |---|---|
-| `3.0_linear_regression_{variable}.csv` | Predições + todas as colunas dos vizinhos + `training_start` |
-| `3.0_linear_regression_metrics.csv` | Resumo de métricas por variável |
+| λ candidatos | 0.001, 0.01, 0.1, 1.0, 10.0, 100.0 |
+| Validação | últimos 10% do treino (temporal) |
+| Critério | menor MAE na validação |
 
-> Requer o Passo 1.5 executado antes.
+| Destino | Arquivo | Descrição |
+|---|---|---|
+| `results/3.0_linear_regression/{variable}/` | `model.npy` | Coeficientes β |
+| `results/3.0_linear_regression/{variable}/` | `metrics.csv` | MAE, RMSE, R², Bias, r, melhor λ |
+| `results/3.0_linear_regression/` | `metrics.csv` | Resumo por variável |
+
+> Requer 1.6.
 
 ---
 
-### Atualizar dependências
+### 4.0 — Rede Neural Densa (MLP)
 
-Se você instalar novos pacotes e quiser salvar no `environment.yml`:
+MLP com arquitetura expand-then-compress otimizada para gap-filling. Detecta automaticamente GPUs disponíveis; com múltiplas GPUs, processa uma variável por GPU em paralelo.
 
 ```bash
-conda env export --no-builds > environment.yml
+python 4.0_dense_layer.py
 ```
 
-Para recriar o ambiente do zero:
+**Arquitetura:**
+
+```
+Input(79) → Linear(256) → BN → GELU → Dropout(0.20)
+          → Linear(512) → BN → GELU → Dropout(0.20)
+          → Linear(256) → BN → GELU → Dropout(0.20)
+          → Linear(128) → BN → GELU → Dropout(0.20)
+          → Linear(64)  → BN → GELU → Dropout(0.10)
+          → Linear(1)
+```
+
+| Parâmetro | Valor |
+|---|---|
+| Otimizador | AdamW (lr=1e-3, weight_decay=1e-4) |
+| Loss | Huber (delta=0.05) |
+| Scheduler | ReduceLROnPlateau (fator=0.5, patience=5) |
+| Early stop | patience=25 épocas sem melhora no val MAE |
+| Val split | últimos 10% do treino (temporal) |
+| Batch size | 8 192 |
+| Max épocas | 750 |
+| Precisão | float32 + AMP (mixed precision) na GPU |
+
+| Destino | Arquivo | Descrição |
+|---|---|---|
+| `models/` | `{variable}_dense.pt` | Melhor state_dict (menor val MAE) |
+| `results/4.0_dense_layer/{variable}/` | `training_log.csv` | loss/MAE por época |
+| `results/4.0_dense_layer/{variable}/` | `metrics.csv` | Métricas no teste |
+| `results/4.0_dense_layer/` | `metrics.csv` | Resumo por variável |
+
+> Requer 1.6. GPU recomendada (treina em CPU como fallback).
+
+---
+
+## Estrutura de diretórios
+
+```
+Climate-Intelligence-Engine/
+├── data/                        # parquets gerados pelo pipeline
+├── models/                      # scalers e pesos dos modelos
+├── results/                     # métricas por script
+│   ├── 2.0_neighbors/
+│   ├── 3.0_linear_regression/
+│   └── 4.0_dense_layer/
+├── main.ipynb                   # notebook principal
+├── utils.py                     # funções compartilhadas
+├── environment.yml
+└── 1.1_download_data.py … 4.0_dense_layer.py
+```
+
+---
+
+## Recriar o ambiente
 
 ```bash
 conda env remove -n climate-engine

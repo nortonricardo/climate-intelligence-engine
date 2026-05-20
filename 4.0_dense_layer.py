@@ -302,12 +302,22 @@ def _worker(args: tuple) -> dict | None:
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+REQUIRE_GPU = True   # False → permite fallback para CPU
+
+
 def main() -> None:
     print("=== 4.0 Dense Layer (MLP) ===\n")
     print(f"  arch={HIDDEN_DIMS}  dropout={DROPOUT}")
     print(f"  batch={BATCH_SIZE}  lr={LR}  patience={PATIENCE}  max_epochs={MAX_EPOCHS}\n")
 
-    devices   = available_devices()
+    devices = available_devices()
+    if REQUIRE_GPU and devices == ["cpu"]:
+        raise RuntimeError(
+            "Nenhuma GPU encontrada. Verifique a instalação do PyTorch com CUDA:\n"
+            "  python -c \"import torch; print(torch.cuda.is_available(), torch.version.cuda)\"\n"
+            "  pip install torch --index-url https://download.pytorch.org/whl/cu126 --force-reinstall\n"
+            "Para rodar em CPU mesmo assim, defina REQUIRE_GPU = False no topo do script."
+        )
     variables = VARIABLES_TO_RUN if VARIABLES_TO_RUN is not None else VARIABLES
     tasks     = [(v, devices[i % len(devices)]) for i, v in enumerate(variables)]
 
