@@ -183,7 +183,7 @@ def train_variable(variable: str, device_str: str) -> dict | None:
     )
 
     # ── modelo ────────────────────────────────────────────────────────────────
-    model     = torch.compile(DenseNet(N_FEATURES, HIDDEN_DIMS, DROPOUT).to(device))
+    model     = torch.compile(DenseNet(N_FEATURES, HIDDEN_DIMS, DROPOUT).to(device), mode="reduce-overhead")
     criterion = nn.HuberLoss(delta=HUBER_DELTA)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -193,9 +193,9 @@ def train_variable(variable: str, device_str: str) -> dict | None:
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if use_amp:
-        mem_alloc = torch.cuda.memory_allocated(device) / 1024**3
-        mem_total = torch.cuda.get_device_properties(device).total_memory / 1024**3
-        _step(f"modelo: {n_params:,} params  |  GPU mem: {mem_alloc:.2f}/{mem_total:.1f} GB")
+        mem_alloc_mb = torch.cuda.memory_allocated(device) / 1024**2
+        mem_total_gb = torch.cuda.get_device_properties(device).total_memory / 1024**3
+        _step(f"modelo: {n_params:,} params  |  GPU mem: {mem_alloc_mb:.1f} MB / {mem_total_gb:.1f} GB")
 
     # ── loop de épocas ────────────────────────────────────────────────────────
     var_dir    = RESULTS_DIR / variable
