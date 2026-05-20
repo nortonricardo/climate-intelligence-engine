@@ -133,8 +133,8 @@ class DenseNet(nn.Module):
 # ── dataset helpers ───────────────────────────────────────────────────────────
 
 def df_to_tensors(df: pd.DataFrame) -> tuple[torch.Tensor, torch.Tensor]:
-    X = torch.from_numpy(df[FEATURE_COLS].to_numpy(dtype=np.float32))
-    y = torch.from_numpy(df["measurement"].to_numpy(dtype=np.float32))
+    X = torch.from_numpy(df[FEATURE_COLS].to_numpy(dtype=np.float32).copy())
+    y = torch.from_numpy(df["measurement"].to_numpy(dtype=np.float32).copy())
     return X, y
 
 
@@ -185,7 +185,7 @@ def train_variable(variable: str, device_str: str) -> dict | None:
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6
     )
-    scaler_amp = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler_amp = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     _step(f"modelo: {n_params:,} parâmetros")
@@ -210,7 +210,7 @@ def train_variable(variable: str, device_str: str) -> dict | None:
         for X_b, y_b in train_loader:
             X_b, y_b = X_b.to(device), y_b.to(device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 pred = model(X_b)
                 loss = criterion(pred, y_b)
             scaler_amp.scale(loss).backward()
@@ -221,7 +221,7 @@ def train_variable(variable: str, device_str: str) -> dict | None:
 
         # validação
         model.eval()
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_amp):
+        with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
             val_pred = model(X_val_dev).cpu().numpy()
         val_mae  = float(np.mean(np.abs(val_pred - y_val_np)))
         val_rmse = float(np.sqrt(np.mean((val_pred - y_val_np) ** 2)))
@@ -265,7 +265,7 @@ def train_variable(variable: str, device_str: str) -> dict | None:
 
     X_test, y_test = df_to_tensors(test_df); del test_df
     preds: list[np.ndarray] = []
-    with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_amp):
+    with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
         for s in range(0, len(X_test), BATCH_SIZE * 4):
             chunk = X_test[s : s + BATCH_SIZE * 4].to(device)
             preds.append(model(chunk).cpu().numpy())
