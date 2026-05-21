@@ -61,9 +61,6 @@ from utils import (
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision("high")   # TF32 nos Tensor Cores da Ampere
 
-import torch._inductor.config as _ind_cfg
-_ind_cfg.max_autotune_gemm = False           # A4000 não tem SMs suficientes para max_autotune_gemm
-
 # ── hiperparâmetros fixos ─────────────────────────────────────────────────────
 
 BATCH_SIZE  = 131_072
@@ -101,7 +98,7 @@ CONFIGS: list[Config] = [
         name="base",
         hidden_dims=[256, 512, 256, 128, 64],
         dropout=0.20,
-        lr=4e-3,
+        lr=1e-3,
         batch_size=524_288,
         accum_steps=1,
     ),
@@ -110,7 +107,7 @@ CONFIGS: list[Config] = [
         name="wide",
         hidden_dims=[1024, 2048, 2048, 1024, 512],
         dropout=0.15,
-        lr=3e-3,
+        lr=1e-3,
         batch_size=262_144,
         accum_steps=2,
     ),
@@ -119,7 +116,7 @@ CONFIGS: list[Config] = [
         name="xl",
         hidden_dims=[2048, 4096, 2048, 1024, 512],
         dropout=0.10,
-        lr=2e-3,
+        lr=1e-3,
         batch_size=131_072,
         accum_steps=4,
     ),
@@ -222,7 +219,7 @@ def train_variable(variable: str, device_str: str, cfg: Config) -> dict | None:
         model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
     )
     scheduler  = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6
+        optimizer, mode="min", factor=0.5, patience=10, min_lr=1e-6
     )
     scaler_amp = torch.amp.GradScaler("cuda", enabled=use_amp)
 
@@ -376,7 +373,12 @@ def _gpu_worker(device_str: str, task_q, result_q) -> None:
         if item is None:          # poison pill — encerra o worker
             break
         cfg, variable = item
-        result_q.put(train_variable(variable, device_str, cfg))
+        try:
+            result = train_variable(variable, device_str, cfg)
+        except Exception as e:
+            print(f"\n  ERROR [{variable}][{cfg.name}] {device_str}: {e}", flush=True)
+            result = None
+        result_q.put(result)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
