@@ -208,21 +208,51 @@ Input(79) → Linear(256) → BN → GELU → Dropout(0.20)
 |---|---|
 | Otimizador | AdamW (lr=1e-3, weight_decay=1e-4) |
 | Loss | Huber (delta=0.05) |
-| Scheduler | ReduceLROnPlateau (fator=0.5, patience=5) |
+| Scheduler | ReduceLROnPlateau (fator=0.5, patience=10) |
 | Early stop | patience=25 épocas sem melhora no val MAE |
 | Val split | últimos 10% do treino (temporal) |
-| Batch size | 8 192 |
 | Max épocas | 750 |
 | Precisão | float32 + AMP (mixed precision) na GPU |
 
+3 configurações treinadas em paralelo por variável (base / wide / xl).
+
 | Destino | Arquivo | Descrição |
 |---|---|---|
-| `models/` | `{variable}_dense.pt` | Melhor state_dict (menor val MAE) |
-| `results/4.0_dense_layer/{variable}/` | `training_log.csv` | loss/MAE por época |
+| `models/` | `{variable}_{config}_dense.pt` | Melhor state_dict (menor val MAE) |
+| `results/4.0_dense_layer/{variable}/` | `training_log_{config}.csv` | loss/MAE por época |
 | `results/4.0_dense_layer/{variable}/` | `metrics.csv` | Métricas no teste |
 | `results/4.0_dense_layer/` | `metrics.csv` | Resumo por variável |
 
-> Requer 1.6. GPU recomendada (treina em CPU como fallback).
+> Requer 1.6. GPU obrigatória.
+
+---
+
+### 5.0 — Random Forest (LightGBM RF mode, GPU)
+
+Random Forest via LightGBM no modo RF com histogramas acelerados por GPU. Uma variável por GPU em paralelo via `CUDA_VISIBLE_DEVICES` + `subprocess`.
+
+```bash
+python 5.0_random_forest.py
+```
+
+| Parâmetro | Valor |
+|---|---|
+| Árvores | 500 (com early stopping em 50) |
+| num_leaves | 127 |
+| feature_fraction | 0.33 (~26 de 79 features) |
+| bagging_fraction | 0.80 |
+| min_child_samples | 50 |
+| Objetivo | regression_l1 (MAE) |
+| Val split | últimos 10% do treino (temporal) |
+
+| Destino | Arquivo | Descrição |
+|---|---|---|
+| `models/` | `{variable}_rf.lgb` | Modelo LightGBM serializado |
+| `results/5.0_random_forest/{variable}/` | `metrics.csv` | Métricas no teste |
+| `results/5.0_random_forest/{variable}/` | `feature_importance.csv` | Importância por feature (gain + split) |
+| `results/5.0_random_forest/` | `metrics.csv` | Resumo por variável |
+
+> Requer 1.6. GPU recomendada (fallback automático para CPU).
 
 ---
 
@@ -235,11 +265,12 @@ Climate-Intelligence-Engine/
 ├── results/                     # métricas por script
 │   ├── 2.0_neighbors/
 │   ├── 3.0_linear_regression/
-│   └── 4.0_dense_layer/
+│   ├── 4.0_dense_layer/
+│   └── 5.0_random_forest/
 ├── main.ipynb                   # notebook principal
 ├── utils.py                     # funções compartilhadas
 ├── environment.yml
-└── 1.1_download_data.py … 4.0_dense_layer.py
+└── 1.1_download_data.py … 5.0_random_forest.py
 ```
 
 ---
