@@ -5,6 +5,7 @@ Arquitetura SNT:
     Cada um dos 15 vizinhos vira um token geoespacial: Linear([n, d, a, b_sin, b_cos] → D).
     O contexto temporal vira um token separado:         Linear([h_sin, h_cos, doy_sin, doy_cos] → D).
     16 tokens → TransformerEncoder (pre-norm) → mean pooling → MLP head → predição.
+    Vizinhos com positional encoding aprendível + schedule warmup linear → cosine decay.
 
 GPU:
     Variável por variável, cada config usa TODAS as GPUs via DDP (DistributedDataParallel).
@@ -68,7 +69,8 @@ N_FEATURES   = len(FEATURE_COLS)     # 79
 MAX_EPOCHS   = 750   # teto de épocas; early stopping normalmente para antes
 PATIENCE     = 25    # épocas consecutivas sem melhora no val MAE para parar
 VAL_FRACTION = 0.10  # últimos 10% do treino como validação (split temporal)
-HUBER_DELTA  = 0.05  # ponto de transição MAE↔MSE da Huber Loss no espaço [0,1]
+HUBER_DELTA   = 0.05  # ponto de transição MAE↔MSE da Huber Loss no espaço [0,1]
+WARMUP_EPOCHS = max(5, MAX_EPOCHS // 20)  # warmup linear de 37 épocas (~5% de MAX_EPOCHS)
 
 
 # ── configurações ──────────────────────────────────────────────────────────────
@@ -140,8 +142,8 @@ class SNT(nn.Module):
         doy_sin/cos   índices 77..78   dia do ano cíclico            [-1,1]
 
     Tokens gerados:
-        15 neighbor tokens — cada um com [n, d, a, b_sin, b_cos] → Linear(5 → D)
-         1 temporal token  — [hour_sin, hour_cos, doy_sin, doy_cos] → Linear(4 → D)
+        15 neighbor tokens — Linear(5 → D) + positional encoding aprendível por rank
+         1 temporal token  — Linear(4 → D)
         Total: 16 tokens × D → self-attention 16×16 por cabeça.
     """
 
@@ -164,6 +166,12 @@ class SNT(nn.Module):
         # confundir o token temporal (d=0, a=0) com um vizinho co-localizado — o que não existe.
         self.neighbor_embed = nn.Linear(5, embedding_dim)
         self.temporal_embed = nn.Linear(4, embedding_dim)
+
+        # Embedding de posição aprendível para os K vizinhos (ranqueados por distância crescente).
+        # Complementa d01..d15 (distância contínua) com um bias por rank ordinal: "ser o 1º
+        # vizinho" é estruturalmente diferente de "ser o 15º" — o modelo aprende esse padrão.
+        # Custo: K × D parâmetros extras (ex: 15×64 = 960 no base config).
+        self.neighbor_pos = nn.Embedding(K, embedding_dim)
 
         # LayerNorm após concatenar os 16 tokens embedados.
         # Antes de entrar no Transformer, normaliza a escala dos embeddings para
@@ -256,7 +264,11 @@ class SNT(nn.Module):
         # Cada token é projetado para o espaço de dimensão D via Linear.
         # O modelo aprende quais combinações de [n, d, a, b_sin, b_cos] são relevantes.
         neighbor_emb = self.neighbor_embed(neighbor_tokens)  # (batch, K, D)
-        temporal_emb = self.temporal_embed(temporal_token)   # (batch, 1, D)
+        # Positional encoding: soma bias aprendível ao embedding de cada vizinho.
+        # idx = [0,..,K-1] já está no device correto (register_buffer).
+        # (K, D) é adicionado a (batch, K, D) por broadcasting automático do PyTorch.
+        neighbor_emb = neighbor_emb + self.neighbor_pos(idx)  # (batch, K, D)
+        temporal_emb = self.temporal_embed(temporal_token)    # (batch, 1, D)
 
         # ── sequência de 16 tokens ─────────────────────────────────────────────
         # Concatena neighbor tokens (15) e temporal token (1) na dimensão de sequência.
@@ -405,11 +417,27 @@ def _ddp_worker(variable: str, config_name: str) -> None:
     # Mais robusta a outliers que MSE puro — importante para rainfall e global_radiation.
     criterion = nn.HuberLoss(delta=HUBER_DELTA)
 
-    # ReduceLROnPlateau reduz o lr por factor=0.5 quando o val MAE não melhora por
-    # patience=10 épocas. Permite que o modelo "desacelere" e refine quando está
-    # próximo de um mínimo local.
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=10, min_lr=1e-6,
+    # Schedule em dois estágios:
+    #
+    #   1. Warmup linear (WARMUP_EPOCHS épocas): lr cresce de 1% → 100% do lr inicial.
+    #      Transformers são instáveis nas primeiras épocas quando os embeddings ainda não
+    #      têm direção útil e os gradientes têm alta variância. O warmup evita que um
+    #      step grande no início destrua a inicialização dos pesos.
+    #
+    #   2. Cosine annealing (épocas restantes): lr decai suavemente seguindo
+    #      lr(t) = eta_min + 0.5·(lr_max - eta_min)·(1 + cos(π·t/T)).
+    #      O decaimento cosine é mais suave que reduções por plateau — o modelo
+    #      "pousa" gradualmente no mínimo em vez de chegar em patamares discretos.
+    #
+    # scheduler.step() é chamado uma vez por época (não por batch).
+    _warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=WARMUP_EPOCHS,
+    )
+    _cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=MAX_EPOCHS - WARMUP_EPOCHS, eta_min=1e-6,
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[_warmup, _cosine], milestones=[WARMUP_EPOCHS],
     )
 
     # GradScaler para mixed precision: mantém pesos em float32 mas faz o forward em
@@ -510,7 +538,7 @@ def _ddp_worker(variable: str, config_name: str) -> None:
         dist.all_reduce(val_n,       op=dist.ReduceOp.SUM)
         val_mae = (val_abs_sum / val_n).item()
 
-        scheduler.step(val_mae)
+        scheduler.step()  # avança o schedule (warmup → cosine), independente do val_mae
         current_lr  = optimizer.param_groups[0]["lr"]
         epoch_dt    = time.time() - epoch_start
         epoch_times.append(epoch_dt)
