@@ -43,6 +43,11 @@ _BASE_PARAMS: dict = {
     # acelerados por GPU — muito mais rápido que sklearn para 47M amostras.
     "boosting_type":     "rf",
 
+    # Obrigatório para RF mode: cada árvore contribui com 100% do seu valor.
+    # Sem isso, o padrão (0.1) aplica shrinkage como em boosting — o modelo
+    # nunca converge e para de melhorar após 2-10 árvores.
+    "learning_rate":     1.0,
+
     # Minimiza o MAE diretamente (mais robusto a outliers do que MSE).
     # No contexto de gap-filling climático, picos extremos de chuva/radiação
     # não distorcem o treinamento.
@@ -50,21 +55,24 @@ _BASE_PARAMS: dict = {
     "metric":            "mae",
 
     # Número máximo de folhas por árvore.
-    # 127 = 2^7 - 1: árvores profundas o suficiente para capturar interações
-    # entre vizinhos sem explodir a memória. max_depth=-1 deixa o LightGBM
-    # crescer pelo num_leaves, sem limite de profundidade fixo.
-    "num_leaves":        127,
+    # 255 = 2^8 - 1: árvores mais profundas capturam interações complexas entre
+    # vizinhos (ex: n01 alto + n03 baixo + altitude delta grande). Com 47M amostras
+    # e min_child_samples=20, overfitting é mínimo.
+    "num_leaves":        255,
     "max_depth":         -1,
 
-    # Exige pelo menos 50 amostras por folha terminal.
-    # Com ~47M linhas de treino, evita folhas com poucos exemplos (overfitting
-    # em padrões raros de estações com dados escassos).
-    "min_child_samples": 50,
+    # Exige pelo menos 20 amostras por folha terminal.
+    # Com ~47M linhas, 20 amostras por folha é estatisticamente robusto e permite
+    # que o modelo capture padrões raros sem overfitting.
+    "min_child_samples": 20,
 
-    # A cada árvore, usa apenas 33% das features escolhidas aleatoriamente.
-    # ~26 de 79 features — próximo de sqrt(79) ≈ 8.9 mas mais generoso,
-    # o que aumenta a diversidade entre árvores e reduz correlação entre elas.
-    "feature_fraction":  0.33,
+    # feature_fraction: 33% das features por árvore (nível de árvore).
+    # feature_fraction_bynode: 33% das features em cada split individual.
+    # Usar os dois juntos replica o comportamento do sklearn RF — subsampling
+    # de features em CADA nó de decisão, não só uma vez por árvore.
+    # Isso aumenta a diversidade entre árvores e reduz correlação entre elas.
+    "feature_fraction":        1.0,
+    "feature_fraction_bynode": 0.33,
 
     # A cada árvore, usa 80% das linhas sorteadas sem reposição (bagging).
     # bagging_freq=1 significa que o sorteio ocorre em toda árvore — obrigatório
@@ -92,7 +100,10 @@ _BASE_PARAMS: dict = {
 }
 
 # Número máximo de árvores a treinar por variável.
-N_ESTIMATORS = 500
+# 1000 dá runway suficiente para variáveis que precisam de mais árvores para
+# convergir (ex: rainfall, global_radiation). Early stopping garante que para
+# antes se não houver melhora.
+N_ESTIMATORS = 1000
 
 # Para o treino se o val MAE não melhorar em 50 árvores consecutivas.
 # Para RF, a melhora desacelera conforme as árvores se acumulam — 50 dá margem
