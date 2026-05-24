@@ -111,7 +111,12 @@ _BASE_PARAMS: dict = {
 _VAR_PARAMS: dict[str, dict] = {
     "rainfall": {
         "objective":              "tweedie",
-        "tweedie_variance_power": 1.5,  # 1=Poisson, 2=Gamma, 1.5=zero-inflated ideal
+        "tweedie_variance_power": 1.5,   # 1=Poisson, 2=Gamma, 1.5=zero-inflated ideal
+        # Tweedie + RF mode + GPU tem um bug no builder de histogramas: com dados
+        # zero-inflated o Hessian das amostras zero fica ~0 e o GPU encontra splits
+        # degenerados com 0 amostras no filho esquerdo → LightGBM fatal error.
+        # CPU não tem esse bug; rainfall é 1 subprocess isolado — não afeta as outras GPUs.
+        "device":                 "cpu",
     },
 }
 
