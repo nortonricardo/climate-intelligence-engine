@@ -1,0 +1,2 @@
+n_train,n_estimators,MAE,RMSE,R²,Bias,r
+46018298,61,0.0331,0.116,0.1245,0.005,0.4091
