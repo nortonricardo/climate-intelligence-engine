@@ -61,12 +61,20 @@ torch.backends.cudnn.benchmark = True
 # nas multiplicações de matrizes — principal operação do Transformer (Q·K^T).
 torch.set_float32_matmul_precision("high")
 
-# Desabilita Flash Attention no SDPA dispatcher do PyTorch.
-# Flash Attention falha com "CUDA error: invalid argument" em algumas combinações de
-# driver CUDA + head_dim pequeno (head_dim=16 está na borda do suporte do FA2).
-# O backend memory-efficient (xformers) produz resultados idênticos e é mais robusto.
+# Força o backend "math" do SDPA dispatcher do PyTorch (desabilita Flash e memory-efficient).
+#
+# Por que não Flash Attention: falha com "CUDA error: invalid argument" nesta combinação
+# de driver CUDA + head_dim=16 (limite do FA2 nesta versão).
+#
+# Por que não memory-efficient: falha com "batch size exceeds 65535" — nosso batch base
+# é 262.144 por GPU, acima do limite interno do kernel xformers.
+#
+# O backend math não tem restrição de batch nem de head_dim.
+# Para sequências curtas (16 tokens), a matriz de atenção é 16×16 — tão pequena que
+# o math é comparável ao Flash em velocidade (Flash só ganha em seq_len >> 512).
 torch.backends.cuda.enable_flash_sdp(False)
-torch.backends.cuda.enable_mem_efficient_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_math_sdp(True)
 
 RESULTS_6    = RESULTS_DIR / "6.0_transformer"
 K            = 15                    # número de vizinhos — deve bater com get_feature_cols(k=15)
