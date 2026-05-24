@@ -100,9 +100,15 @@ WARMUP_EPOCHS = max(5, MAX_EPOCHS // 20)  # warmup linear de 37 épocas (~5% de 
 # Valores típicos: head_dim ∈ {16, 32, 64}.
 #
 # Com DDP e 5 GPUs, batch efetivo = batch_size × 5:
-#   base:  262.144 × 5 = 1.310.720 amostras por step
-#   wide:  131.072 × 5 =   655.360 amostras por step
-#   xl:     65.536 × 5 =   327.680 amostras por step
+#   base:   65.536 × 5 =   327.680 amostras por step
+#   wide:   32.768 × 5 =   163.840 amostras por step
+#   xl:     16.384 × 5 =    81.920 amostras por step
+#
+# Batch sizes foram reduzidos 4× em relação à versão inicial.
+# Motivo: o backend math do SDPA (necessário pois Flash e memory-efficient falham
+# neste hardware) materializa ativações FFN completas para backprop em float32.
+# Com ffn_hidden=256 e batch=262.144, os tensores intermediários de 3 camadas
+# somavam ~14 GB — acima do limite das GPUs de 16 GiB.
 
 CONFIGS: dict[str, dict] = {
     "base": {
@@ -111,7 +117,7 @@ CONFIGS: dict[str, dict] = {
         "n_heads":       4,     # cabeças de atenção (head_dim = 64/4 = 16)
         "ffn_hidden":    256,   # dimensão da camada oculta do FFN = 4 × embedding_dim
         "dropout":       0.10,  # dropout aplicado dentro da atenção e do FFN
-        "batch_size":    262_144,
+        "batch_size":    65_536,
         "lr":            1e-3,
     },
     "wide": {
@@ -120,7 +126,7 @@ CONFIGS: dict[str, dict] = {
         "n_heads":       8,     # head_dim = 128/8 = 16
         "ffn_hidden":    512,
         "dropout":       0.10,
-        "batch_size":    131_072,
+        "batch_size":    32_768,
         "lr":            1e-3,
     },
     "xl": {
@@ -129,7 +135,7 @@ CONFIGS: dict[str, dict] = {
         "n_heads":       8,     # head_dim = 256/8 = 32
         "ffn_hidden":    1024,
         "dropout":       0.10,
-        "batch_size":    65_536,
+        "batch_size":    16_384,
         "lr":            5e-4,  # modelo maior é mais sensível → lr menor para estabilidade
     },
 }
@@ -797,7 +803,11 @@ def main() -> None:
                 "--config",   config_name,
                 "--worker",
             ]
-            result = subprocess.run(cmd)
+            # expandable_segments=True: reduz fragmentação do alocador de memória CUDA.
+            # Sem isso, blocos reservados mas não alocados ficam presos em segmentos
+            # menores e não podem ser usados para novas alocações grandes.
+            env = {**os.environ, "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+            result = subprocess.run(cmd, env=env)
 
             tag = f"{variable}/{config_name}"
             if result.returncode == 0:
