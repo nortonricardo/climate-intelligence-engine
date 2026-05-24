@@ -242,7 +242,7 @@ python 5.0_random_forest.py
 | feature_fraction_bynode | 0.33 (~26 de 79 features por nó) |
 | bagging_fraction | 0.80 |
 | min_child_samples | 10 |
-| Objetivo | regression (MSE); rainfall usa tweedie (power=1.5) |
+| Objetivo | regression (MSE) |
 | Val split | últimos 10% do treino (temporal) |
 
 | Destino | Arquivo | Descrição |
@@ -256,6 +256,53 @@ python 5.0_random_forest.py
 
 ---
 
+### 6.0 — SNT (Spatial Neighbor Transformer, DDP multi-GPU)
+
+Transformer onde cada estação vizinha é tratada como um token geoespacial.
+Treina uma variável por vez usando todas as GPUs disponíveis via DDP (DistributedDataParallel).
+
+```bash
+python 6.0_transformer.py
+```
+
+**Arquitetura SNT:**
+
+```
+Input(79)
+  → 15 neighbor tokens: Linear([n, d, a, b_sin, b_cos] → D)
+  →  1 temporal token:  Linear([hour_sin, hour_cos, doy_sin, doy_cos] → D)
+  → TransformerEncoder (pre-norm, N camadas, H cabeças)  ← atenção 16×16
+  → mean pooling
+  → MLP head (D → D//2 → 1)
+```
+
+| Config | D | Camadas | Cabeças | Params | Batch/GPU |
+|--------|---|---------|---------|--------|-----------|
+| base   | 64  | 3  | 4 | ~220K  | 262.144 |
+| wide   | 128 | 6  | 8 | ~835K  | 131.072 |
+| xl     | 256 | 12 | 8 | ~6.4M  | 65.536  |
+
+| Parâmetro | Valor |
+|---|---|
+| Otimizador | AdamW (lr=1e-3 / 5e-4 xl, weight_decay=1e-4) |
+| Loss | Huber (delta=0.05) |
+| Scheduler | ReduceLROnPlateau (fator=0.5, patience=10) |
+| Early stop | patience=25 épocas |
+| Val split | últimos 10% do treino (temporal) |
+| Max épocas | 750 |
+| Paralelismo | DDP via torchrun — todas as GPUs por variável |
+
+| Destino | Arquivo | Descrição |
+|---|---|---|
+| `models/` | `{variable}_{config}_snt.pt` | Melhor state_dict |
+| `results/6.0_transformer/{config}/{variable}/` | `training_log.csv` | loss/MAE por época |
+| `results/6.0_transformer/{config}/{variable}/` | `metrics.csv` | Métricas no teste |
+| `results/6.0_transformer/` | `comparison.csv` | Resumo todas variáveis + configs |
+
+> Requer 1.6. GPU obrigatória (DDP via NCCL).
+
+---
+
 ## Estrutura de diretórios
 
 ```
@@ -266,11 +313,12 @@ Climate-Intelligence-Engine/
 │   ├── 2.0_neighbors/
 │   ├── 3.0_linear_regression/
 │   ├── 4.0_dense_layer/
-│   └── 5.0_random_forest/
+│   ├── 5.0_random_forest/
+│   └── 6.0_transformer/
 ├── main.ipynb                   # notebook principal
 ├── utils.py                     # funções compartilhadas
 ├── environment.yml
-└── 1.1_download_data.py … 5.0_random_forest.py
+└── 1.1_download_data.py … 6.0_transformer.py
 ```
 
 ---
