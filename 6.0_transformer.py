@@ -61,6 +61,13 @@ torch.backends.cudnn.benchmark = True
 # nas multiplicações de matrizes — principal operação do Transformer (Q·K^T).
 torch.set_float32_matmul_precision("high")
 
+# Desabilita Flash Attention no SDPA dispatcher do PyTorch.
+# Flash Attention falha com "CUDA error: invalid argument" em algumas combinações de
+# driver CUDA + head_dim pequeno (head_dim=16 está na borda do suporte do FA2).
+# O backend memory-efficient (xformers) produz resultados idênticos e é mais robusto.
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+
 RESULTS_6    = RESULTS_DIR / "6.0_transformer"
 K            = 15                    # número de vizinhos — deve bater com get_feature_cols(k=15)
 FEATURE_COLS = get_feature_cols(k=K) # lista das 79 colunas de features na ordem correta
