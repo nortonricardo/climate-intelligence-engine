@@ -1,0 +1,2 @@
+config,n_train,n_test,best_val_mae,MAE,RMSE,R²,Bias,r
+base,46995929,16844032,0.0495,0.0492,0.1035,0.8701,0.0033,0.9329
