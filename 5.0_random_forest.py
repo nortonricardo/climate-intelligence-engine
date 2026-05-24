@@ -109,15 +109,9 @@ _BASE_PARAMS: dict = {
 # para dados esparsos com zeros exatos. Isso permite que múltiplas árvores
 # contribuam ao ensemble da rainfall.
 _VAR_PARAMS: dict[str, dict] = {
-    "rainfall": {
-        "objective":              "tweedie",
-        "tweedie_variance_power": 1.5,   # 1=Poisson, 2=Gamma, 1.5=zero-inflated ideal
-        # Tweedie + RF mode + GPU tem um bug no builder de histogramas: com dados
-        # zero-inflated o Hessian das amostras zero fica ~0 e o GPU encontra splits
-        # degenerados com 0 amostras no filho esquerdo → LightGBM fatal error.
-        # CPU não tem esse bug; rainfall é 1 subprocess isolado — não afeta as outras GPUs.
-        "device":                 "cpu",
-    },
+    # Tweedie foi testado para rainfall (zero-inflated) mas piorou R² de 0.211 → 0.124.
+    # Causa: Tweedie assume Var(Y) ∝ μ^power na escala original — após MinMaxScaler [0,1]
+    # essa relação quebra. MSE com 1 árvore era melhor. Sem overrides por enquanto.
 }
 
 # Número máximo de árvores a treinar por variável.
