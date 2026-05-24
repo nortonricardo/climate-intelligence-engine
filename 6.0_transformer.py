@@ -337,9 +337,12 @@ def _ddp_worker(variable: str, config_name: str) -> None:
     # backend="nccl": protocolo otimizado para comunicação GPU↔GPU via NVLink/PCIe.
     # O torchrun já configurou MASTER_ADDR e MASTER_PORT — o processo rank 0 age
     # como coordenador; os outros se conectam a ele na porta definida.
-    dist.init_process_group(backend="nccl")
+    # set_device ANTES de init_process_group: garante que o NCCL cria o comunicador
+    # na GPU correta. Sem isso, o NCCL pode usar GPU 0 em todos os ranks até o primeiro
+    # collective, e o barrier() emite warning "using device under current context".
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
+    dist.init_process_group(backend="nccl")
 
     cfg       = CONFIGS[config_name]
     label_col = "measurement"
@@ -676,6 +679,12 @@ def _ddp_worker(variable: str, config_name: str) -> None:
             f"  r={metrics['r']:.4f}",
             flush=True,
         )
+
+    # Sincroniza todos os ranks antes de encerrar: ranks 1..4 esperam aqui enquanto
+    # rank 0 termina a avaliação no teste. Sem isso, ranks 1..4 chamariam
+    # destroy_process_group antes de rank 0 terminar — o heartbeat do NCCL detecta
+    # "peer saiu inesperadamente" e pode matar rank 0 no meio da avaliação.
+    dist.barrier()
 
     # Encerra o grupo de comunicação e libera os recursos NCCL.
     # Obrigatório chamar antes do processo terminar para evitar leaks de socket.
