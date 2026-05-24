@@ -49,11 +49,12 @@ _BASE_PARAMS: dict = {
     # nunca converge e para de melhorar após 2-10 árvores.
     "learning_rate":     1.0,
 
-    # Minimiza o MAE diretamente (mais robusto a outliers do que MSE).
-    # No contexto de gap-filling climático, picos extremos de chuva/radiação
-    # não distorcem o treinamento.
-    "objective":         "regression_l1",
-    "metric":            "mae",
+    # MSE como objetivo de treino: folhas usam médias, que se combinam corretamente
+    # no ensemble (média de médias = média global). MAE (L1) usa medianas, que não
+    # se combinam bem em RF — causa early stop prematuro (global_radiation parou
+    # na árvore 8). Monitoramos val MAE para manter consistência com 3.0 e 4.0.
+    "objective":         "regression",  # MSE internamente
+    "metric":            "mae",         # monitora MAE no val para early stopping
 
     # Número máximo de folhas por árvore.
     # 255 = 2^8 - 1: árvores mais profundas capturam interações complexas entre
