@@ -1,5 +1,4 @@
 """
-teste pull
 5.0_random_forest.py — Random Forest via LightGBM RF mode (GPU).
 
 Modo orquestrador:  python 5.0_random_forest.py
@@ -57,16 +56,17 @@ _BASE_PARAMS: dict = {
     "metric":            "mae",         # monitora MAE no val para early stopping
 
     # Número máximo de folhas por árvore.
-    # 255 = 2^8 - 1: árvores mais profundas capturam interações complexas entre
-    # vizinhos (ex: n01 alto + n03 baixo + altitude delta grande). Com 47M amostras
-    # e min_child_samples=20, overfitting é mínimo.
-    "num_leaves":        255,
+    # 511 = 2^9 - 1: árvores mais profundas que 255 capturam interações mais
+    # complexas entre vizinhos. Com 47M amostras e min_child_samples=10, cada
+    # folha ainda tem pelo menos 10 amostras — overfitting controlado pelo
+    # early stopping no val set.
+    "num_leaves":        511,
     "max_depth":         -1,
 
-    # Exige pelo menos 20 amostras por folha terminal.
-    # Com ~47M linhas, 20 amostras por folha é estatisticamente robusto e permite
-    # que o modelo capture padrões raros sem overfitting.
-    "min_child_samples": 20,
+    # Exige pelo menos 10 amostras por folha terminal.
+    # Com ~47M linhas, 10 por folha é estatisticamente robusto e permite splits
+    # mais finos que 20 — captura padrões raros sem overfitting relevante nessa escala.
+    "min_child_samples": 10,
 
     # feature_fraction: 33% das features por árvore (nível de árvore).
     # feature_fraction_bynode: 33% das features em cada split individual.
@@ -101,16 +101,29 @@ _BASE_PARAMS: dict = {
     "verbose":           -1,
 }
 
-# Número máximo de árvores a treinar por variável.
-# 1000 dá runway suficiente para variáveis que precisam de mais árvores para
-# convergir (ex: rainfall, global_radiation). Early stopping garante que para
-# antes se não houver melhora.
-N_ESTIMATORS = 1000
+# Parâmetros específicos por variável — sobrescrevem _BASE_PARAMS onde necessário.
+# Rainfall é zero-inflated: >90% zeros, raros valores altos. Com MSE a primeira
+# árvore já aprende "prever próximo de zero" e minimiza o erro quase perfeitamente,
+# então o ensemble para em 1 árvore. Tweedie (power=1.5) combina Poisson
+# (probabilidade de chuva) + Gamma (magnitude da chuva) — distribuição natural
+# para dados esparsos com zeros exatos. Isso permite que múltiplas árvores
+# contribuam ao ensemble da rainfall.
+_VAR_PARAMS: dict[str, dict] = {
+    "rainfall": {
+        "objective":              "tweedie",
+        "tweedie_variance_power": 1.5,  # 1=Poisson, 2=Gamma, 1.5=zero-inflated ideal
+    },
+}
 
-# Para o treino se o val MAE não melhorar em 50 árvores consecutivas.
-# Para RF, a melhora desacelera conforme as árvores se acumulam — 50 dá margem
-# suficiente para confirmar convergência antes de parar.
-EARLY_STOP   = 50
+# Número máximo de árvores a treinar por variável.
+# 2000 dá runway suficiente — temperature usou 646/1000 na rodada anterior e
+# ainda melhorava devagar; com mais espaço pode convergir em ~1000-1200 árvores.
+N_ESTIMATORS = 2000
+
+# Para o treino se o val MAE não melhorar em 100 árvores consecutivas.
+# 100 dá mais paciência que 50 — importante para temperature, que melhora
+# lentamente nas últimas centenas de árvores (ganhos de ~0.0001 por 50 árvores).
+EARLY_STOP   = 100
 
 # Fração do treino reservada para validação (split temporal — as últimas linhas).
 # Mantém consistência com os splits usados em 3.0 e 4.0.
@@ -162,8 +175,9 @@ def _worker(variable: str, gpu_id: int) -> None:
     del X_tr, y_tr, X_val, y_val
 
     # injeta o ID da GPU visível neste subprocess (sempre 0 porque CUDA_VISIBLE_DEVICES
-    # já remapeou a GPU física para índice 0 antes de o processo ser iniciado)
-    params = {**_BASE_PARAMS, "gpu_device_id": gpu_id}
+    # já remapeou a GPU física para índice 0 antes de o processo ser iniciado).
+    # _VAR_PARAMS sobrescreve _BASE_PARAMS onde necessário (ex: Tweedie para rainfall).
+    params = {**_BASE_PARAMS, **_VAR_PARAMS.get(variable, {}), "gpu_device_id": gpu_id}
 
     print(f"[{variable}] iniciando RF — GPU {gpu_id}", flush=True)
     model = lgb.train(

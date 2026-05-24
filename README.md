@@ -237,12 +237,12 @@ python 5.0_random_forest.py
 
 | Parâmetro | Valor |
 |---|---|
-| Árvores | 500 (com early stopping em 50) |
-| num_leaves | 127 |
-| feature_fraction | 0.33 (~26 de 79 features) |
+| Árvores | 2000 (com early stopping em 100) |
+| num_leaves | 511 |
+| feature_fraction_bynode | 0.33 (~26 de 79 features por nó) |
 | bagging_fraction | 0.80 |
-| min_child_samples | 50 |
-| Objetivo | regression_l1 (MAE) |
+| min_child_samples | 10 |
+| Objetivo | regression (MSE); rainfall usa tweedie (power=1.5) |
 | Val split | últimos 10% do treino (temporal) |
 
 | Destino | Arquivo | Descrição |
