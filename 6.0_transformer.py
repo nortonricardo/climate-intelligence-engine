@@ -38,6 +38,7 @@ import torch
 import torch.distributed as dist           # primitivas de comunicação entre GPUs (all_reduce, broadcast)
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP  # wrapper que sincroniza gradientes
+from torch.utils.checkpoint import checkpoint as grad_checkpoint  # gradient checkpointing
 from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -297,15 +298,27 @@ class SNT(nn.Module):
         seq = torch.cat([neighbor_emb, temporal_emb], dim=1)  # (batch, 16, D)
         seq = self.embed_norm(seq)
 
-        # ── self-attention ────────────────────────────────────────────────────
-        # Cada token "olha" para todos os outros 15 tokens via atenção.
-        # Para o wide config (H=8 cabeças): 8 matrizes de atenção 16×16 em paralelo.
-        # Cada cabeça aprende um padrão diferente:
-        #   ex: cabeça 1 = "vizinhos próximos"
-        #       cabeça 2 = "mesma faixa de altitude"
-        #       cabeça 3 = "mesmo azimute (norte/sul)"
-        #       cabeça 4 = "contexto temporal → hora do pico solar"
-        seq = self.transformer(seq)  # (batch, 16, D)
+        # ── self-attention com gradient checkpointing ─────────────────────────
+        # Em vez de chamar self.transformer(seq) de uma vez, iteramos camada a
+        # camada usando grad_checkpoint. Durante o treino, isso descarta as
+        # ativações intermediárias (Q, K, V, FFN hidden) de cada camada após o
+        # forward, e as recomputa durante o backward quando necessário.
+        #
+        # Custo: ~33% mais FLOPs (recomputa cada layer uma vez a mais).
+        # Benefício: reduz uso de VRAM de ativações de O(n_layers) para O(1) —
+        # crítico para wide (6 camadas) e xl (12 camadas) em GPUs de 16 GiB.
+        #
+        # use_reentrant=False: modo moderno que preserva corretamente o estado
+        # do RNG para dropout durante a recomputação — sem esse flag, o dropout
+        # do backward teria máscaras diferentes do forward, corrompendo gradientes.
+        #
+        # No eval (torch.no_grad()), não há backward → não há recomputa.
+        # Chamamos o transformer diretamente para evitar overhead desnecessário.
+        if self.training:
+            for layer in self.transformer.layers:
+                seq = grad_checkpoint(layer, seq, use_reentrant=False)
+        else:
+            seq = self.transformer(seq)  # (batch, 16, D)
 
         # ── mean pooling ──────────────────────────────────────────────────────
         # Agrega os 16 tokens em um único vetor de contexto fazendo a média.
@@ -741,7 +754,7 @@ def _aggregate_summary() -> None:
 
 # ── orquestrador ──────────────────────────────────────────────────────────────
 
-def main() -> None:
+def main(only: str | None = None) -> None:
     """
     Orquestrador: para cada (variável, config), lança torchrun com todas as GPUs.
 
@@ -750,6 +763,8 @@ def main() -> None:
     - Cada torchrun é um processo separado que gerencia 5 subprocessos internamente.
     - Usar torchrun (em vez de multiprocessing.spawn) evita os problemas de contexto
       CUDA observados no 4.0 quando múltiplos spawns coexistiam.
+
+    only: se fornecido via --only, treina apenas essa variável (útil para testes).
     """
     try:
         n_gpus = torch.cuda.device_count()
@@ -760,6 +775,15 @@ def main() -> None:
         print("Nenhuma GPU detectada — SNT requer GPU.", flush=True)
         sys.exit(1)
 
+    # filtra variáveis se --only foi passado
+    if only is not None:
+        if only not in VARIABLES:
+            print(f"[ERRO] variável '{only}' inválida. Opções: {VARIABLES}", flush=True)
+            sys.exit(1)
+        variables = [only]
+    else:
+        variables = list(VARIABLES)
+
     print(f"=== 6.0 SNT (Spatial Neighbor Transformer) ===")
     print(f"GPUs: {n_gpus}")
     for cfg_name, cfg in CONFIGS.items():
@@ -769,13 +793,13 @@ def main() -> None:
             f"  layers={cfg['n_layers']}  heads={cfg['n_heads']}"
             f"  batch/GPU={cfg['batch_size']:,}  efetivo={eff:,}"
         )
-    print(f"\n{len(VARIABLES)} variáveis × {len(CONFIGS)} configs"
-          f" = {len(VARIABLES)*len(CONFIGS)} runs  (sequencial)\n")
+    print(f"\n{len(variables)} variável(is) × {len(CONFIGS)} configs"
+          f" = {len(variables)*len(CONFIGS)} runs  (sequencial)\n")
 
     RESULTS_6.mkdir(parents=True, exist_ok=True)
     failed: list[str] = []
 
-    for variable in VARIABLES:
+    for variable in variables:
         for config_name in CONFIGS:
             # Porta nova a cada run: garante que dois torchrun consecutivos
             # não colidam no rendezvous mesmo que o OS demore a liberar a porta.
@@ -830,6 +854,8 @@ if __name__ == "__main__":
     parser.add_argument("--config",   default=None)
     parser.add_argument("--worker",   action="store_true",
                         help="modo DDP worker — chamado pelo torchrun, não invocar manualmente")
+    parser.add_argument("--only",     default=None,
+                        help="treina apenas esta variável (ex: temperature). Útil para testes.")
     args = parser.parse_args()
 
     if args.worker:
@@ -840,4 +866,4 @@ if __name__ == "__main__":
         _ddp_worker(args.variable, args.config)
     else:
         # Modo orquestrador: executado diretamente pelo usuário.
-        main()
+        main(only=args.only)
