@@ -487,8 +487,9 @@ def _ddp_worker(variable: str, config_name: str) -> None:
         print(f"[{variable}/{config_name}] parâmetros: {n_params:,}", flush=True)
 
     # ── cria dirs de saída — apenas rank 0 faz I/O em disco ───────────────────
-    var_dir   = RESULTS_6 / config_name / variable
-    ckpt_path = MODELS_DIR / f"{variable}_{config_name}_snt.pt"
+    var_dir     = RESULTS_6 / config_name / variable
+    ckpt_path   = MODELS_DIR / f"{variable}_{config_name}_snt.pt"
+    resume_path = MODELS_DIR / f"{variable}_{config_name}_snt_resume.pt"
     if rank == 0:
         var_dir.mkdir(parents=True, exist_ok=True)
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -502,9 +503,32 @@ def _ddp_worker(variable: str, config_name: str) -> None:
     epochs_no_impr = 0
     log_rows: list[dict] = []
     epoch_times: list[float] = []
+    start_epoch = 1
     t0 = time.time()
 
-    for epoch in range(1, MAX_EPOCHS + 1):
+    # resume: detecta checkpoint completo e restaura todo o estado de treino.
+    # Todos os ranks carregam o mesmo arquivo — optimizer e scheduler são
+    # idênticos entre ranks (gradientes all-reduced → updates iguais).
+    if resume_path.exists():
+        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+        model.module.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        scaler.load_state_dict(ckpt["scaler"])
+        start_epoch    = ckpt["epoch"] + 1
+        best_val_mae   = ckpt["best_val_mae"]
+        epochs_no_impr = 0
+        if rank == 0:
+            log_path = var_dir / "training_log.csv"
+            if log_path.exists():
+                log_rows = pd.read_csv(log_path).to_dict("records")
+            print(
+                f"  [{variable}/{config_name}] resumindo da época {ckpt['epoch']}"
+                f"  best_val_mae={best_val_mae:.5f}",
+                flush=True,
+            )
+
+    for epoch in range(start_epoch, MAX_EPOCHS + 1):
         epoch_start = time.time()
 
         # ── treino ────────────────────────────────────────────────────────────
@@ -626,6 +650,15 @@ def _ddp_worker(variable: str, config_name: str) -> None:
                 # garante que o checkpoint não tem o prefixo "module." nos nomes
                 # dos parâmetros, facilitando o carregamento sem DDP na inferência.
                 torch.save(model.module.state_dict(), ckpt_path)
+                # resume checkpoint: estado completo para retomar após interrupção.
+                torch.save({
+                    "model":        model.module.state_dict(),
+                    "optimizer":    optimizer.state_dict(),
+                    "scheduler":    scheduler.state_dict(),
+                    "scaler":       scaler.state_dict(),
+                    "epoch":        epoch,
+                    "best_val_mae": best_val_mae,
+                }, resume_path)
         else:
             epochs_no_impr += 1
 
@@ -637,6 +670,11 @@ def _ddp_worker(variable: str, config_name: str) -> None:
                     flush=True,
                 )
             break
+
+    # treino concluído (early stop ou max épocas) — remove resume checkpoint
+    # para que o próximo run inicie do zero sem entrar em modo resume.
+    if rank == 0 and resume_path.exists():
+        resume_path.unlink()
 
     # ── log de treino (rank 0) ─────────────────────────────────────────────────
     if rank == 0:
