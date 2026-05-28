@@ -792,7 +792,7 @@ def _aggregate_summary() -> None:
 
 # ── orquestrador ──────────────────────────────────────────────────────────────
 
-def main(only: str | None = None) -> None:
+def main(only: str | None = None, config_filter: str | None = None) -> None:
     """
     Orquestrador: para cada (variável, config), lança torchrun com todas as GPUs.
 
@@ -822,6 +822,15 @@ def main(only: str | None = None) -> None:
     else:
         variables = list(VARIABLES)
 
+    # filtra configs se --config foi passado no modo orquestrador
+    if config_filter is not None:
+        if config_filter not in CONFIGS:
+            print(f"[ERRO] config '{config_filter}' inválida. Opções: {list(CONFIGS)}", flush=True)
+            sys.exit(1)
+        configs = [config_filter]
+    else:
+        configs = list(CONFIGS)
+
     print(f"=== 6.0 SNT (Spatial Neighbor Transformer) ===")
     print(f"GPUs: {n_gpus}")
     for cfg_name, cfg in CONFIGS.items():
@@ -831,14 +840,14 @@ def main(only: str | None = None) -> None:
             f"  layers={cfg['n_layers']}  heads={cfg['n_heads']}"
             f"  batch/GPU={cfg['batch_size']:,}  efetivo={eff:,}"
         )
-    print(f"\n{len(variables)} variável(is) × {len(CONFIGS)} configs"
-          f" = {len(variables)*len(CONFIGS)} runs  (sequencial)\n")
+    print(f"\n{len(variables)} variável(is) × {len(configs)} config(s)"
+          f" = {len(variables)*len(configs)} runs  (sequencial)\n")
 
     RESULTS_6.mkdir(parents=True, exist_ok=True)
     failed: list[str] = []
 
     for variable in variables:
-        for config_name in CONFIGS:
+        for config_name in configs:
             # Porta nova a cada run: garante que dois torchrun consecutivos
             # não colidam no rendezvous mesmo que o OS demore a liberar a porta.
             port = _find_free_port()
@@ -894,6 +903,8 @@ if __name__ == "__main__":
                         help="modo DDP worker — chamado pelo torchrun, não invocar manualmente")
     parser.add_argument("--only",     default=None,
                         help="treina apenas esta variável (ex: temperature). Útil para testes.")
+    parser.add_argument("--only-config", default=None, dest="only_config",
+                        help="treina apenas esta config (ex: xl). Combinável com --only.")
     args = parser.parse_args()
 
     if args.worker:
@@ -904,4 +915,4 @@ if __name__ == "__main__":
         _ddp_worker(args.variable, args.config)
     else:
         # Modo orquestrador: executado diretamente pelo usuário.
-        main(only=args.only)
+        main(only=args.only, config_filter=args.only_config)
