@@ -680,9 +680,15 @@ def _ddp_worker(variable: str, config_name: str) -> None:
     if rank == 0:
         pd.DataFrame(log_rows).to_csv(var_dir / "training_log.csv", index=False)
 
+    # Libera ranks 1..4 ANTES da avaliação no teste.
+    # A avaliação é single-GPU (só rank 0) e pode demorar 10+ min no xl —
+    # manter os outros ranks no barrier causaria NCCL timeout (600s) e crash.
+    dist.barrier()
+    dist.destroy_process_group()
+
     # ── avalia no teste com o melhor modelo (rank 0) ───────────────────────────
     # Avaliação é single-GPU: rank 0 carrega o melhor checkpoint e prediz o teste.
-    # Os outros ranks já terminaram sua participação útil; apenas rank 0 faz I/O.
+    # O processo group já foi destruído — não há mais comunicação entre ranks.
     if rank == 0:
         print(f"  [{variable}/{config_name}] avaliando no teste...", flush=True)
 
@@ -737,15 +743,6 @@ def _ddp_worker(variable: str, config_name: str) -> None:
             flush=True,
         )
 
-    # Sincroniza todos os ranks antes de encerrar: ranks 1..4 esperam aqui enquanto
-    # rank 0 termina a avaliação no teste. Sem isso, ranks 1..4 chamariam
-    # destroy_process_group antes de rank 0 terminar — o heartbeat do NCCL detecta
-    # "peer saiu inesperadamente" e pode matar rank 0 no meio da avaliação.
-    dist.barrier()
-
-    # Encerra o grupo de comunicação e libera os recursos NCCL.
-    # Obrigatório chamar antes do processo terminar para evitar leaks de socket.
-    dist.destroy_process_group()
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
